@@ -28,7 +28,7 @@ RADIOS ?= 1 2 3 4 5 5a 6 6a 7 7a 8 8a 9 9a 10 10a 11 11a 12 101a
 RADIO_ENTRIES = $(foreach r,$(RADIOS),gtaudio/$(r).wav)
 # Arquivos/pastas de dados para o boot (sem diferenciar maiusculas). Ajuste a lista conforme o motor for pedindo (veja o log "fopen(...)").
 # Bancos de efeitos: tools/stage_data.sh junta bil/ste/wil num unico audio/sfx.raw (variavel SFX_MAPS).
-DATA_ENTRIES ?= fstyle.sty e.gxt s.gxt p.gxt $(MAP_ENTRIES) $(BONUS_ENTRIES) nyc.gci test1.seq attract keyboard $(FRONTEND_DIR) \
+DATA_ENTRIES ?= fstyle.sty audio/vocals e.gxt s.gxt p.gxt $(MAP_ENTRIES) $(BONUS_ENTRIES) nyc.gci test1.seq attract keyboard $(FRONTEND_DIR) \
                 audio/bil.raw audio/bil.sdt audio/fstyle.raw audio/fstyle.sdt $(RADIO_ENTRIES)
 
 ENGINE := $(shell tr -d '\r' < port/game_srcs.txt)

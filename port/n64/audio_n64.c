@@ -297,6 +297,7 @@ typedef struct {
     int open;
     wav64_t wav;
     int volume, rate;
+    int vocal;       /* announcer vocal: the game already scales its volume by the sfx setting */
 } Strm;
 static Strm g_st[NSTREAM];
 
@@ -316,7 +317,7 @@ static void streams_refresh(void)
 static void stream_apply(Strm *s)
 {
     const int ch = stream_ch(s);
-    float v = (float)s->volume / 127.0f * ((float)g_vol_music * 0.1f) * GANHO_MUSICA;
+    float v = (float)s->volume / 127.0f * (s->vocal ? 1.0f : (float)g_vol_music * 0.1f) * GANHO_MUSICA;
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
     mixer_ch_set_vol(ch, v, v);
@@ -352,6 +353,7 @@ int gta2_n64_stream_open(int id, const char *path)
     if (s->open) { mixer_ch_stop(stream_ch(s)); wav64_close(&s->wav); s->open = 0; }
     wav64_open(&s->wav, p);
     s->id = id; s->open = 1; s->volume = 127; s->rate = 22050;
+    s->vocal = strstr(p, "/vocals/") != NULL;
     return 1;
 }
 
