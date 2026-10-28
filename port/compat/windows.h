@@ -511,6 +511,13 @@ LONG RegOpenKeyA(HKEY, LPCSTR, PHKEY);
 int wvsprintfA(LPSTR, LPCSTR, va_list);
 #define wvsprintf wvsprintfA
 BOOL GetComputerNameA(LPSTR, LPDWORD);
+BOOL GetUserNameA(LPSTR, LPDWORD);
+#define LANG_FRENCH 0x0c
+#define LANG_GERMAN 0x07
+#define LANG_ITALIAN 0x10
+#define LANG_SPANISH 0x0a
+#define LANG_PORTUGUESE 0x16
+#define LANG_RUSSIAN 0x19
 #define GetComputerName GetComputerNameA
 BOOL GetKeyboardLayoutNameA(LPSTR);
 #define GetKeyboardLayoutName GetKeyboardLayoutNameA

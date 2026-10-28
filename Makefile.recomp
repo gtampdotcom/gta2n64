@@ -46,9 +46,12 @@ CXX_ENGINE = $(CXX_STD) -fshort-wchar -fms-extensions -fpermissive -w -DGTA2_POR
 
 # Motor: otimiza por tamanho (a RAM do N64 e o gargalo; o codigo ocupa ~1,9 MB dos 8 MB).
 # Arquivos mais pesados por quadro (mapa, sprites, colisao, fisica do carro, matematica): -O2 (mais rapido, codigo maior).
-HOT_ENGINE := MapRenderer sprite SpriteRenderer_1C SpriteGrid_400 Draw map_0x370 collide CarPhysics_B0 Fix16_Point fix16 ang16 angle
+HOT_ENGINE := MapRenderer sprite SpriteRenderer SpriteGrid Draw map_0x370 collide CarPhysics Fix16_Point fix16 ang16
 HOT_OBJS := $(addprefix $(OBJ_DIR)/port/gta2_re/Source/,$(addsuffix .o,$(HOT_ENGINE)))
-$(filter-out $(HOT_OBJS),$(ENGINE_OBJS)): N64_CXXFLAGS += -Os
+ENGINE_OPT ?= -Os
+$(filter-out $(HOT_OBJS),$(ENGINE_OBJS)): N64_CXXFLAGS += $(ENGINE_OPT)
+# upstream gta2_re asserts on fixed-point overflow (Fix16 *, +, -); the shipped game just wraps, so they are compiled out
+$(ENGINE_OBJS): N64_CXXFLAGS += -DNDEBUG
 $(HOT_OBJS): N64_CXXFLAGS += -O2
 
 # crt_stubs.cpp usa especificacoes de excecao dinamicas (invalidas em C++17); a camada n64 foi validada em C++14.

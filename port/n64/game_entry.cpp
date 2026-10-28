@@ -37,7 +37,7 @@ void SeedRegistry()
     }
     gta2_port_reg_set_dword("hklm\\software\\freeloader.com\\gta2", "cityinstalled", 2);
     snprintf(path, sizeof(path), "%s\\debug", kRegRoot);
-    gta2_port_reg_set_dword(path, "skip_trains", 1); // o port web tambem desliga trens (crash conhecido)
+    // trains on: no "skip_trains" key at all -- the engine only checks that the key EXISTS (Get_Debug_Setting), so even 0 turned them off
     // N64: por padrao abre o menu original do GTA 2 (o motor escolhe o mapa pelo data\\test1.seq: City 1 = wil, 2 = ste, 3 = bil).
     // Se o jogador segurou Z ao ligar (main_n64.c), pula o menu e entra direto no mapa escolhido.
     static const char* const kMaps[3] = {"bil", "ste", "wil"};
