@@ -2,7 +2,7 @@
 
 # GTA 2 — Nintendo 64
 
-https://www.youtube.com/watch?v=yMEteAXLPMY
+https://www.youtube.com/watch?v=rrHVhQ7jRxY
 
 **PC-to-N64 port · Port da versão PC para N64**
 
