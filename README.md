@@ -2,7 +2,7 @@
 
 # GTA 2 — Nintendo 64
 
-**Complete PC-to-N64 port · Port completo da versão PC para N64**
+**PC-to-N64 port · Port da versão PC para N64**
 
 [🇺🇸 English](#english) · [🇧🇷 Português Brasileiro](#português-brasileiro)
 
@@ -16,10 +16,10 @@
 
 # GTA 2 for Nintendo 64 — PC Port
 
-A finished port of the PC game **Grand Theft Auto 2** to the **Nintendo 64**, built on the
+A port of the PC game **Grand Theft Auto 2** to the **Nintendo 64**, built on the
 [`gta2_re`](https://github.com/CriminalRETeam/gta2_re) decompilation and [libdragon](https://github.com/DragonMinded/libdragon).
 The original game logic runs on the console (**Expansion Pak / 8 MB RAM required**) on top of a custom
-RDP renderer, audio, input and file layer. Tested on a real Nintendo 64 with the Expansion Pak and in the [ares](https://ares-emu.net/) emulator.
+RDP renderer, audio, input and file layer. This fork was only tested with [ares](https://ares-emu.net/) emulator and hasn't been tested on a real Nintendo 64 with the Expansion Pak.
 
 > **This repository contains only the port's source code.**
 > It contains **no** part of GTA 2: no game data, no ROM, no binaries. It does not redistribute the
@@ -34,10 +34,8 @@ This project is **finished**: it is a playable port of GTA 2 for Nintendo 64, **
 
 The game includes **English, Spanish and Brazilian Portuguese**, with PT-BR integrated into the game's native GXT text system rather than drawn as a translation overlay. It also includes two selectable presentation modes:
 
-- **PC mode:** extended camera distance and the coloured lighting system inspired by the original PC version.
-- **PSX mode:** reduced visual settings inspired by the PlayStation version, targeting a stable **30 FPS** on real N64 hardware in the developer's tests. This is a performance-oriented option, not a claim that the original PlayStation game ran at a locked 30 FPS.
-
-No further development, new features or support are currently planned. The repository remains available for reference and learning; forks are welcome.
+- **PC mode:** extended camera distance and lighting (dusk mode). The frame rate really drops in this mode.
+- **PSX mode:** reduced visual settings and lighting (noon mode). Better frame rate than dusk but there are still slowdowns, it's not even close to a stable 30 FPS.
 
 ## Important: the game is NOT included
 
