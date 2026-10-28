@@ -30,7 +30,7 @@ Personal / educational project. Not affiliated with or endorsed by Rockstar Game
 
 ## Project status and features
 
-This project is **finished**: it is a playable port of GTA 2 for Nintendo 64, **not a tech demo**. The completed build preserves the PC version's game content, including the **Mad Island** bonus map absent from the PlayStation release, and has been tested on real N64 hardware using the Expansion Pak, as well as in ares. The full ROM is approximately **58 MB**.
+This is a playable port of GTA 2 for Nintendo 64 that is still a **work in progress**. It preserves the PC version's game content, including the **Mad Island** bonus map absent from the PlayStation release. This fork has only been tested in ares, not on real N64 hardware. The full ROM is approximately **58 MB**.
 
 The game includes **English, Spanish and Brazilian Portuguese**, with PT-BR integrated into the game's native GXT text system rather than drawn as a translation overlay. It also includes two selectable presentation modes:
 
@@ -165,9 +165,9 @@ Port de **Grand Theft Auto 2 para PC** no **Nintendo 64**, baseado na reconstru�
 
 A lógica do jogo é executada no console com um renderizador próprio para o RDP e camadas adaptadas de áudio, controles e arquivos. **Expansion Pak (8 MB de RAM) obrigatório.** Este fork foi testado apenas no emulador [ares](https://ares-emu.net/) e não foi testado em um Nintendo 64 real com o Expansion Pak.
 
-## Estado do projeto: finalizado
+## Estado do projeto: em desenvolvimento
 
-Este é um **port finalizado, não uma demonstração técnica**. A ROM completa tem aproximadamente **58 MB** e preserva o conteúdo da versão PC, incluindo as cidades e o mapa bônus **Mad Island**, ausente na versão PlayStation.
+Este é um port jogável, mas ainda **em desenvolvimento**. Este fork foi testado apenas no ares, não em um N64 real. A ROM tem aproximadamente **58 MB** e preserva o conteúdo da versão PC, incluindo as cidades e o mapa bônus **Mad Island**, ausente na versão PlayStation.
 
 ### Recursos e diferenças
 
