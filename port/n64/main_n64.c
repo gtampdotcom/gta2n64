@@ -45,6 +45,23 @@ static void set_key(int k, int down)
     }
 }
 
+/* pause menu (Hud.cpp): buttons newly pressed since the last call. 1 up, 2 down, 4 left, 8 right, 16 A, 32 B */
+int gta2_n64_menu_pad(void)
+{
+    static int prev = -1;
+    joypad_inputs_t in = joypad_get_inputs(JOYPAD_PORT_1);
+    int now = 0;
+    if (in.btn.d_up || in.stick_y > 40) now |= 1;
+    if (in.btn.d_down || in.stick_y < -40) now |= 2;
+    if (in.btn.d_left || in.stick_x < -40) now |= 4;
+    if (in.btn.d_right || in.stick_x > 40) now |= 8;
+    if (in.btn.a) now |= 16;
+    if (in.btn.b) now |= 32;
+    const int pressed = prev < 0 ? 0 : now & ~prev; /* first call: whatever is held (Start) does not count */
+    prev = now;
+    return pressed;
+}
+
 static void poll_input(void)
 {
     joypad_poll();
@@ -116,7 +133,10 @@ static void poll_input(void)
 int gta2_n64_gfx_active(void);
 /* Escolha de inicio, lida por game_entry.cpp: -1 = menu original do GTA 2; 0 = bil (Industrial), 1 = ste (Residential), 2 = wil (Downtown)
  * direto no mapa (sem menu). Segurar Z ao ligar pula o menu: Z = bil, Z + C-baixo = ste, Z + C-esquerda = wil. */
-int gta2_n64_boot_map = -1;
+#ifndef N64_BOOT_MAP
+#define N64_BOOT_MAP -1 /* build with -DN64_BOOT_MAP=0..2 to always start in that map, as if Z were held */
+#endif
+int gta2_n64_boot_map = N64_BOOT_MAP;
 static void read_boot_choice(void)
 {
     joypad_inputs_t in;
@@ -158,6 +178,14 @@ int main(void)
     read_boot_choice();
     console_render();
 
+    { /* whole-game buffers first, at the bottom of the heap (see gta2_n64_render_prealloc) */
+        extern void gta2_n64_render_prealloc(void);
+        extern void gta2_frame_prealloc(void);
+        extern void gta2_n64_big_prealloc(void);
+        gta2_n64_render_prealloc();
+        gta2_n64_big_prealloc();
+        gta2_frame_prealloc();
+    }
     const int rc = gta2_game_init();
     if (rc != 0)
     {

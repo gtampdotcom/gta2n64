@@ -212,6 +212,16 @@ static int texfail(const N64Tex *t, int why)
     (void)t; (void)why;
     return -1;
 }
+/* N64: the texture cache (768 KB) lives for the whole game; allocated at boot (main_n64.c) so it sits at the bottom of the
+ * heap instead of in the middle of the first level's memory, where it split the heap for every later level load */
+void gta2_n64_render_prealloc(void)
+{
+    if (!g_cbuf) {
+        g_cbuf = (uint16_t *)memalign(64, (size_t)CACHE_N * SLOT_U16 * 2);
+        if (g_cbuf) memset(g_c, 0, sizeof(g_c));
+    }
+}
+
 static int tex_slot(N64Tex *t, float scale, int additive)
 {
     if (!t) return texfail(t, 0);
@@ -595,7 +605,15 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         if (y0 < 0) y0 = 0;
         if (x1 > IW) x1 = IW;
         if (y1 > IH) y1 = IH;
-        if (x1 > x0 && y1 > y0) {
+        const uint32_t a = cm->colour >> 24; /* 0 = opaque clear; 1..254 = translucent panel (pause menu) */
+        if (x1 > x0 && y1 > y0 && a != 0 && a != 255) {
+            rdpq_set_mode_standard();
+            rdpq_mode_combiner(RDPQ_COMBINER_FLAT);
+            rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+            rdpq_set_prim_color(RGBA32(cm->colour & 0xFF, (cm->colour >> 8) & 0xFF, (cm->colour >> 16) & 0xFF, a));
+            rdpq_fill_rectangle(x0, y0, x1, y1);
+            s_valid = 0; s_up_slot = -1; s_persp = -1;
+        } else if (x1 > x0 && y1 > y0) {
             rdpq_set_mode_fill(RGBA32(cm->colour & 0xFF, (cm->colour >> 8) & 0xFF, (cm->colour >> 16) & 0xFF, 255));
             rdpq_fill_rectangle(x0, y0, x1, y1);
             s_valid = 0; s_up_slot = -1; s_persp = -1; /* o modo de preenchimento substituiu o modo de desenho */
@@ -605,8 +623,8 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
     if (cm->kind == 3) { blit_img(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_persp = -1; return; } /* imagem do menu */
     if (cm->kind == 2) { nfont_draw(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_persp = -1; return; } /* frase com a fonte do N64: o rdpq_text troca o modo do RDP */
     if (cm->kind != 0 || cm->count < 3) return;
-    if (g_dbg == 1 && cm->blend != 0) return;
-    if (g_dbg == 2 && cm->blend == 0) return;
+    if (g_dbg == 1 && (cm->blend & 0xFFu) != 0) return;
+    if (g_dbg == 2 && (cm->blend & 0xFFu) == 0) return;
 
     int slot;
     if (cm->texture >= TEX_TOKEN_BASE && cm->texture < TEX_TOKEN_BASE + CACHE_N) { /* capturada no desenho */
@@ -614,9 +632,9 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         if (slot >= 0) g_c[slot].used = g_frames + 1;
     } else {
         N64Tex *tx = (N64Tex *)(uintptr_t)cm->texture;
-        slot = DBG_FLAT ? -1 : tex_slot(tx, cmd_scale(cm, verts, tx, sx, sy), cm->blend == 2);
+        slot = DBG_FLAT ? -1 : tex_slot(tx, cmd_scale(cm, verts, tx, sx, sy), (cm->blend & 0xFFu) == 2);
     }
-    if (slot < 0 && cm->blend != 0 && !DBG_FLAT) return; /* sem dados e translucido: pula */
+    if (slot < 0 && (cm->blend & 0xFFu) != 0 && !DBG_FLAT) return; /* sem dados e translucido: pula */
 
     /* tipo: 0 = sem textura, 1 = textura x cor do vertice, 2 = so textura (todos os vertices brancos e opacos) */
     int is_tex = slot >= 0 ? 1 : 0;
@@ -624,25 +642,25 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         int white = 1;
         for (uint32_t k = 0; k < cm->count && white; ++k) {
             const uint32_t d = verts[cm->first + k].rgba;
-            if ((d & 0xFFFFFFu) != 0xFFFFFFu || (cm->blend == 1 && (d >> 24) != 0xFFu) || cm->blend == 2) white = 0;
+            if ((d & 0xFFFFFFu) != 0xFFFFFFu || ((cm->blend & 0xFFu) == 1 && (d >> 24) != 0xFFu) || (cm->blend & 0xFFu) == 2) white = 0;
         }
         if (white) is_tex = 2;
     }
-    if (!s_valid || is_tex != s_tex || cm->blend != s_blend) {
+    if (!s_valid || is_tex != s_tex || (int)cm->blend != s_blend) {
         rdpq_set_mode_standard();
         rdpq_mode_persp(0); s_persp = 0; /* ligada triangulo a triangulo, so onde o w varia */
-        rdpq_mode_filter(g_opt_filter ? FILTER_BILINEAR : FILTER_POINT);
+        rdpq_mode_filter(g_opt_filter && !(cm->blend & 0x100u) ? FILTER_BILINEAR : FILTER_POINT); /* 0x100 = HUD, pixel-snapped */
         if (is_tex) {
             rdpq_mode_combiner(is_tex == 2 ? RDPQ_COMBINER_TEX : RDPQ_COMBINER_TEX_SHADE);
-            rdpq_mode_alphacompare(cm->blend == 0 ? 128 : 0);
+            rdpq_mode_alphacompare((cm->blend & 0xFFu) == 0 ? 128 : 0);
         } else {
             rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
             rdpq_mode_alphacompare(0);
         }
-        if (cm->blend == 1)      rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA)));
-        else if (cm->blend == 2) rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA))); /* aditivo do PC: o RDP estoura a soma (arco-iris), entao vira transparencia de 75% */
+        if ((cm->blend & 0xFFu) == 1)      rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA)));
+        else if ((cm->blend & 0xFFu) == 2) rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA))); /* aditivo do PC: o RDP estoura a soma (arco-iris), entao vira transparencia de 75% */
         else                     rdpq_mode_blender(0);
-        s_valid = 1; s_tex = is_tex; s_blend = cm->blend;
+        s_valid = 1; s_tex = is_tex; s_blend = (int)cm->blend;
 
     }
     float flat_r = 1.0f, flat_g = 1.0f, flat_b = 1.0f;
@@ -697,6 +715,7 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         }
         if (bad || maxx < 0 || minx > SCR_W || maxy < 0 || miny > SCR_H) { continue; }
         const float wr = (wmin > 0.0f && wmax < 1e20f) ? wmax / wmin : 1.0f;
+        const float inv_wmax = wmax > 0.0f ? 1.0f / wmax : 0.0f; /* one divide per triangle instead of three */
         const int persp_ok = g_opt_persp && wmin > 0.0f && wmax < 1e20f && (g_opt_persp == 1 || wr >= PERSP_MIN_RATIO);
         float tr = 0.0f, tg = 0.0f, tb = 0.0f; /* depuracao 4: cor pela razao de w */
         if (g_dbg == 4) {
@@ -708,11 +727,13 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         for (int k = 0; k < 3; ++k) {
             const uint32_t d = p[k].rgba;
             v[k][0] = p[k].x * sx; v[k][1] = p[k].y * sy;
-            v[k][2] = g_dbg == 4 ? tr : (float)(d & 0xFF) / 255.0f * flat_r;
-            v[k][3] = g_dbg == 4 ? tg : (float)((d >> 8) & 0xFF) / 255.0f * flat_g;
-            v[k][4] = g_dbg == 4 ? tb : (float)((d >> 16) & 0xFF) / 255.0f * flat_b;
-            v[k][5] = (cm->blend == 0) ? 1.0f : (cm->blend == 2) ? 0.75f : (float)(d >> 24) / 255.0f; /* aditivo: o PC ignorava o alfa */
-            const float iw = persp_ok ? p[k].w / wmax : 1.0f;      /* normalizado: o que importa e a razao entre vertices */
+            /* multiplies by 1/255 (the compiler keeps a divide otherwise: ~29 cycles each on the VR4300) */
+            const float k255 = 1.0f / 255.0f;
+            v[k][2] = g_dbg == 4 ? tr : (float)(d & 0xFF) * (k255 * flat_r);
+            v[k][3] = g_dbg == 4 ? tg : (float)((d >> 8) & 0xFF) * (k255 * flat_g);
+            v[k][4] = g_dbg == 4 ? tb : (float)((d >> 16) & 0xFF) * (k255 * flat_b);
+            v[k][5] = ((cm->blend & 0xFFu) == 0) ? 1.0f : ((cm->blend & 0xFFu) == 2) ? 0.75f : (float)(d >> 24) * k255; /* aditivo: o PC ignorava o alfa */
+            const float iw = persp_ok ? p[k].w * inv_wmax : 1.0f;  /* normalizado: o que importa e a razao entre vertices */
             const float pm = 1.0f;
             v[k][6] = p[k].u * ts * pm; v[k][7] = p[k].v * tt * pm; v[k][8] = iw;
         }

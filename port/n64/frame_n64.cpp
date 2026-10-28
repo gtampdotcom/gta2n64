@@ -2,6 +2,7 @@
 // Draw-list storage and presentation (see frame.h).
 #include "render/frame.h"
 #include "render/n64tex.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,12 +21,12 @@ uint32_t gPresents = 0;
 
 // Gameplay frames are as wide as the selected view (widescreen); everything
 // else (menus, loading screens, movies) is laid out in the 640x480 box and
-// shown pillarboxed. The game sets the layout per frame (Game_0x40::Draw).
+// shown pillarboxed. The game sets the layout per frame (Game::Draw).
 int32_t gFrameWidth = 640;
 float gHudOffsetX = 0.0f;
 
 // The HUD part of the last full draw, replayed by interpolated draws between
-// game updates (Game_0x40::Draw, port patch; D04).
+// game updates (Game::Draw, port patch; D04).
 std::vector<FrameVertex> gHudVerts;
 std::vector<FrameCommand> gHudCmds;
 size_t gHudCmdStart = 0, gHudVertStart = 0;
@@ -56,19 +57,16 @@ bool ensureRoom(std::vector<T>& v, size_t extra)
     {
         return true;
     }
-    size_t cap = v.capacity() * 2;
-    if (cap < v.size() + extra)
+    // Fixed size, allocated once on first use (in the front end, before any map is loaded) and never grown: a list that
+    // doubled during play (explosions, briefings) left big blocks in the middle of the heap, and after a few level loads
+    // the map's 224 KB column buffer no longer found a free run (out of memory with 900 KB free). A frame that needs more
+    // than this simply does not draw the extra sprites.
+    const size_t kBytes = sizeof(T) == sizeof(FrameVertex) ? 144 * 1024 : 48 * 1024; // ~6000 vertices, ~1200 commands
+    if (v.capacity() == 0)
     {
-        cap = v.size() + extra;
+        v.reserve(kBytes / sizeof(T));
     }
-    void* probe = malloc(cap * sizeof(T));
-    if (!probe)
-    {
-        return false;
-    }
-    free(probe);
-    v.reserve(cap);
-    return true;
+    return v.size() + extra <= v.capacity();
 }
 } // namespace
 
@@ -140,6 +138,14 @@ void txtReset()
 
 extern "C" {
 
+// N64: the draw lists live for the whole game; reserved at boot (main_n64.c), before any level memory, so they do not
+// split the heap between level loads
+void gta2_frame_prealloc()
+{
+    ensureRoom(gVerts, 1);
+    ensureRoom(gCmds, 1);
+}
+
 void gta2_frame_push_vertex(uint32_t texture, uint32_t blend, const FrameVertex& v)
 {
     if (!ensureRoom(gVerts, 1))
@@ -159,6 +165,35 @@ void gta2_frame_push_vertex(uint32_t texture, uint32_t blend, const FrameVertex&
     gCmds.back().count++;
     gVerts.push_back(v);
     gVerts.back().x += gHudOffsetX;
+}
+
+// A whole quad or triangle at once (gbh_n64.cpp Draw): one room check and one command check for all its vertices
+void gta2_frame_push_vertices(uint32_t texture, uint32_t blend, const FrameVertex* v, int n)
+{
+    if (!ensureRoom(gVerts, static_cast<size_t>(n)))
+    {
+        return;
+    }
+    if (gForceNewCmd || gCmds.empty() || gCmds.back().kind != 0 || gCmds.back().texture != texture || gCmds.back().blend != blend)
+    {
+        if (!ensureRoom(gCmds, 1))
+        {
+            return;
+        }
+        FrameCommand c = {0, texture, blend, static_cast<uint32_t>(gVerts.size()), 0, 0, {0, 0, 0, 0}};
+        gCmds.push_back(c);
+        gForceNewCmd = false;
+    }
+    gCmds.back().count += static_cast<uint32_t>(n);
+    const size_t base = gVerts.size();
+    gVerts.insert(gVerts.end(), v, v + n);
+    if (gHudOffsetX != 0.0f)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            gVerts[base + i].x += gHudOffsetX;
+        }
+    }
 }
 
 // Texto com a fonte embutida da libdragon: o motor entrega a frase (ASCII, com ^00/^01 para a cor) e a posicao;
@@ -546,6 +581,68 @@ extern "C" int32_t gGta2PortInterpolate;
 void gta2_port_set_interpolation(int on)
 {
     gGta2PortInterpolate = on ? 1 : 0;
+}
+
+// ---- HUD layer ----
+// The HUD is laid out for 640x480 and the framebuffer is 320x240, so at 1:1 everything would be drawn at half size
+// (blurry text). While Hud::DrawGui draws, each element is scaled by N64_HUD_SCALE around its anchor (the screen
+// corner/edge it belongs to), then the whole HUD is pulled inside a TV-safe margin (N64_HUD_SAFE_X/Y, in 640x480 units).
+#ifndef N64_HUD_SCALE
+#define N64_HUD_SCALE 1.33f       /* briefing text and face, centred messages */
+#endif
+#ifndef N64_HUD_SCALE_TOP
+#define N64_HUD_SCALE_TOP 1.18f   /* top-corner stats: money, hearts, gang bars, wanted level */
+#endif
+#ifndef N64_HUD_SAFE_X
+#define N64_HUD_SAFE_X 16.0f
+#endif
+#ifndef N64_HUD_SAFE_Y
+#define N64_HUD_SAFE_Y 12.0f
+#endif
+int gN64HudOn;
+static float gHudK = 1.0f, gHudAx, gHudAy;
+
+float gta2_n64_hud_scale(int which)
+{
+    return which == 2 ? N64_HUD_SCALE_TOP : which == 1 ? N64_HUD_SCALE : 1.0f;
+}
+
+void gta2_n64_hud_begin(float ax, float ay, int which)
+{
+    gN64HudOn = 1;
+    gHudK = gta2_n64_hud_scale(which);
+    gHudAx = ax;
+    gHudAy = ay;
+}
+
+void gta2_n64_hud_end(void)
+{
+    gN64HudOn = 0;
+}
+
+void gta2_n64_hud_xform(float* x, float* y)
+{
+    const float sx = gHudAx + (*x - gHudAx) * gHudK;
+    const float sy = gHudAy + (*y - gHudAy) * gHudK;
+    *x = N64_HUD_SAFE_X + sx * ((640.0f - 2.0f * N64_HUD_SAFE_X) / 640.0f);
+    *y = N64_HUD_SAFE_Y + sy * ((480.0f - 2.0f * N64_HUD_SAFE_Y) / 480.0f);
+}
+
+// Translucent rectangle (pause menu panel and bars), 640x480 units; rgba = r | g << 8 | b << 16 | a << 24 (a 1..254).
+void gta2_n64_rect(float x0, float y0, float x1, float y1, uint32_t rgba)
+{
+    if (gN64HudOn)
+    {
+        gta2_n64_hud_xform(&x0, &y0);
+        gta2_n64_hud_xform(&x1, &y1);
+    }
+    FrameCommand c = {1, 0, 0, 0, 0, rgba,
+                      {static_cast<int32_t>(x0 + gHudOffsetX), static_cast<int32_t>(y0), static_cast<int32_t>(x1 + gHudOffsetX), static_cast<int32_t>(y1)}};
+    if (!ensureRoom(gCmds, 1))
+    {
+        return;
+    }
+    gCmds.push_back(c);
 }
 
 void Gta2Port_SetFrameLayout(int32_t width, int32_t hudOffsetX)
