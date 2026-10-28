@@ -4,7 +4,7 @@
 # Os dados do jogo (freeware) sao copiados de ../gta2_data/data para o DragonFS (uso pessoal).
 BUILD_DIR = build_recomp
 OBJ_DIR   = $(BUILD_DIR)/o
-N64_ROM_SAVETYPE = none
+N64_ROM_SAVETYPE = sram256k
 N64_INST ?= /opt/libdragon
 include $(N64_INST)/include/n64.mk
 N64_CXXFLAGS ?= $(N64_CFLAGS)
