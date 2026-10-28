@@ -24,7 +24,7 @@ MAP_ENTRIES = $(foreach m,$(MAPS),$(m).gmp $(m).sty $(m).scr $(m))
 BONUS ?= lorne2e lorne2m lorne2h mike1e mike1m mike1h mike2e mike2m mike2h
 BONUS_ENTRIES = $(foreach b,$(BONUS),$(b).gmp $(b).scr)
 # Radios (musica): todas as estacoes numeradas. A.wav e D.wav (CD-check do jogo) ficam de fora ate se saber onde sao usadas.
-RADIOS ?= 1 2 3 4 5 5a 6 6a 7 7a 8 8a 9 9a 10 10a 11 11a 12 101a
+RADIOS ?= 1 2 3 4 5 5a 6 6a 7 7a 8 8a 9 9a 10 10a 11 11a 12 101a A D
 RADIO_ENTRIES = $(foreach r,$(RADIOS),gtaudio/$(r).wav)
 # Arquivos/pastas de dados para o boot (sem diferenciar maiusculas). Ajuste a lista conforme o motor for pedindo (veja o log "fopen(...)").
 # Bancos de efeitos: tools/stage_data.sh junta bil/ste/wil num unico audio/sfx.raw (variavel SFX_MAPS).
