@@ -23,7 +23,7 @@ MAP_ENTRIES = $(foreach m,$(MAPS),$(m).gmp $(m).sty $(m).scr $(m))
 # Fases bonus de cada cidade (listadas em test1.seq: lorne2 = wil, mike1 = ste, mike2 = bil): .gmp + .scr
 BONUS ?= lorne2e lorne2m lorne2h mike1e mike1m mike1h mike2e mike2m mike2h
 BONUS_ENTRIES = $(foreach b,$(BONUS),$(b).gmp $(b).scr)
-# Radios (musica): todas as estacoes numeradas. A.wav e D.wav (CD-check do jogo) ficam de fora ate se saber onde sao usadas.
+# Radios (music): every numbered station plus A.wav and D.wav (all 22 files in gtaudio).
 RADIOS ?= 1 2 3 4 5 5a 6 6a 7 7a 8 8a 9 9a 10 10a 11 11a 12 101a A D
 RADIO_ENTRIES = $(foreach r,$(RADIOS),gtaudio/$(r).wav)
 # Arquivos/pastas de dados para o boot (sem diferenciar maiusculas). Ajuste a lista conforme o motor for pedindo (veja o log "fopen(...)").
