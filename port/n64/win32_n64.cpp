@@ -216,6 +216,11 @@ BOOL CloseHandle(HANDLE)
 {
     return TRUE;
 }
+BOOL GetUserNameA(LPSTR buf, LPDWORD size)
+{
+    return GetComputerNameA(buf, size); // replay header only: the same fixed name
+}
+
 BOOL GetComputerNameA(LPSTR buf, LPDWORD size)
 {
     const char name[] = "BROWSER";

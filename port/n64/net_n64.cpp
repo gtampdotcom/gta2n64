@@ -1,6 +1,6 @@
 // Gerado de gta2-browser/port por tools/gen_n64_platform.py e adaptado para N64 (sem emscripten).
 // The game's network session (NetPlay.cpp, DirectPlay) and lobby dialogs
-// (Network_20324.cpp) are excluded from the browser build. This file provides
+// (NetUi.cpp) are excluded from the browser build. This file provides
 // the NetPlay calls the game makes during a network game, on top of a
 // browser transport run by the shell (web/net.js): BroadcastChannel between
 // tabs, or WebRTC data channels between players (D20, peer-to-peer, no
@@ -22,10 +22,10 @@
 #include <vector>
 
 #include "NetPlay.hpp"
-#include "Network_20324.hpp"
+#include "NetUi.hpp"
 
 DEFINE_GLOBAL(NetPlay, gNetPlay_7071E8, 0x7071E8);
-EXTERN_GLOBAL(s32, gNetworkGameSpeed_7071A0); // Game_0x40.cpp; the DirectPlay lobby set these
+EXTERN_GLOBAL(s32, gNetworkGameSpeed_7071A0); // Game.cpp; the DirectPlay lobby set these
 EXTERN_GLOBAL(s32, gNetworkPolice_7071B0);
 
 namespace
@@ -79,7 +79,7 @@ void gta2_port_net_configure(int count, int me, int delay)
 {
     NetPlay& n = gNetPlay_7071E8;
     gSession = count > 1;
-    n.field_8F0_disabled = gSession ? 0 : 1;
+    n.field_8F0_receive_disabled = gSession ? 0 : 1;
     n.field_5D4_player_idx = me;
     n.field_758_n2.field_4_players_count = count;
     for (s32 i = 0; i < MAX_PLAYERS; ++i)
@@ -176,7 +176,7 @@ void gta2_port_net_peer_left(int idx)
 
 NetPlay::NetPlay()
 {
-    field_8F0_disabled = 1;
+    field_8F0_receive_disabled = 1;
 }
 
 NetPlay::~NetPlay()
@@ -185,7 +185,7 @@ NetPlay::~NetPlay()
 
 // The network game start-up (winmain.cpp, after -N) goes through these: they
 // succeed when the shell has set up a session.
-s32 NetPlay::SetProtoAndConnection_51DAE0(GUID*, Connection_Unknown*)
+s32 NetPlay::SetProtoAndConnection_51DAE0(GUID*, Network_Buffer*)
 {
     return gSession ? 1 : 0;
 }
@@ -198,7 +198,7 @@ s32 NetPlay::InitializeConnection_51E5C0()
 void NetPlay::Disconnect_520D10()
 {
     gSession = false;
-    field_8F0_disabled = 1;
+    field_8F0_receive_disabled = 1;
 }
 
 s32 NetPlay::DeletePlayerFromGroup_521000(u32 idx)
@@ -219,11 +219,11 @@ void NetPlay::GetPlayerName_521100(wchar_t* Destination, u32 idx)
     }
 }
 
-void NetPlay::SetExitGameCallBack_521330(s32, Game_0x40*)
+void NetPlay::SetExitGameCallBack_521330(s32, Game*)
 {
 }
 
-s32 NetPlay::GetMaxPlayers_521350()
+s32 NetPlay::CountActivePlayers_521350()
 {
     return gSession ? static_cast<s32>(field_758_n2.field_4_players_count) : 1;
 }
@@ -235,12 +235,12 @@ bool NetPlay::WaitForPlayersSync_5213E0()
 }
 
 // Only used to resend earlier inputs after a packet loss, which a reliable transport does not have.
-s32 NetPlay::SendToPlayer_521630(Network_8*, s32, char_type)
+s32 NetPlay::SendToPlayer_521630(Network_Buffer*, s32, char_type)
 {
     return 0;
 }
 
-char_type NetPlay::ReceiveGameMessage_521890(Network_8* pOut, s32* pPlayerIdx, u32* packet_subtype)
+bool NetPlay::ReceiveGameMessage_521890(Network_Buffer* pOut, s32* pPlayerIdx, u32* packet_subtype)
 {
     while (gSession && !gInbox.empty())
     {
@@ -265,7 +265,7 @@ char_type NetPlay::ReceiveGameMessage_521890(Network_8* pOut, s32* pPlayerIdx, u
     return 0;
 }
 
-void NetPlay::SendToAll_521B20(Network_8* pSendData)
+void NetPlay::SendToAll_521B20(Network_Buffer* pSendData)
 {
     if (!gSession)
     {
@@ -276,7 +276,7 @@ void NetPlay::SendToAll_521B20(Network_8* pSendData)
     field_758_n2.field_8_packet_game_tick[me] = static_cast<u8>(field_758_n2.field_8_packet_game_tick[me] + 1);
 }
 
-s32 NetPlay::SendKeepAlive_521D20()
+s32 NetPlay::SendPlayerIsQuitting_521D20()
 {
     if (gSession)
     {
@@ -299,15 +299,15 @@ s32 NetPlay::SendGiveUp_521DB0(s32 player_idx)
 
 static char_type gNoMap[1] = {0};
 
-Network_20324::Network_20324()
+NetUi::NetUi()
 {
 }
 
-Network_20324::~Network_20324()
+NetUi::~NetUi()
 {
 }
 
-s32 Network_20324::ShowNetworkUiBlocking_519BD0(HINSTANCE)
+s32 NetUi::ShowNetworkUiBlocking_519BD0(HINSTANCE)
 {
     return gSession ? 1 : 0; // the DirectPlay lobby is replaced by the shell's co-op lobby (web/net.js)
 }
@@ -318,7 +318,7 @@ s32 gRuleType = 2;            // POINTS_GAME_2, or FRAG_GAME_1
 s32 gRuleLimit = 0x7FFFFFFF;  // frags or points to win
 s32 gRuleMinutes = 0;         // time limit, 0: none (the game allows up to 60)
 
-void Network_20324::CopyGameSettings_51C7F0(NetworkGameSettings* pSettings)
+void NetUi::CopyGameSettings_51C7F0(NetworkGameSettings* pSettings)
 {
     memset(pSettings, 0, sizeof(*pSettings));
     pSettings->field_20190_game_speed = 0;
@@ -328,17 +328,17 @@ void Network_20324::CopyGameSettings_51C7F0(NetworkGameSettings* pSettings)
     pSettings->field_201A4_game_time_limit = gRuleMinutes;
 }
 
-char_type* Network_20324::GetMapName_51CA10()
+char_type* NetUi::GetMapName_51CA10()
 {
     return gMap[0][0] ? gMap[0] : gNoMap;
 }
 
-char_type* Network_20324::GetMapStyName_51CA50()
+char_type* NetUi::GetMapStyName_51CA50()
 {
     return gMap[1][0] ? gMap[1] : gNoMap;
 }
 
-char_type* Network_20324::GetMapScrName_51CA90()
+char_type* NetUi::GetMapScrName_51CA90()
 {
     return gMap[2][0] ? gMap[2] : gNoMap;
 }

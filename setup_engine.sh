@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 UPSTREAM="https://github.com/CriminalRETeam/gta2_re.git"
-PIN="02de8beeb766644417f195d360eba33af0ee491f"
+PIN="f945bd13d2f3d03ebfe973e8f83c0c856d58b374"
 DEST="port/gta2_re"
 
 if [ -e "$DEST/Source" ]; then

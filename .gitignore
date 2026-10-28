@@ -37,3 +37,9 @@ ares_*
 capturas/
 tmp*/
 _arquivo_limpeza/
+
+# ---- emulator save files ----
+*.ram
+*.sra
+*.eep
+*.fla

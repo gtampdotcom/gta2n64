@@ -21,6 +21,9 @@
 extern "C" void gta2_n64_tex_forget(const N64Tex* t);
 extern "C" uint32_t gta2_n64_tex_capture(N64Tex* t, float a_scr, float a_tex, int additive);
 extern "C" int gta2_n64_tex_token_empty(uint32_t token);
+extern "C" void gta2_n64_hud_xform(float* x, float* y);
+extern "C" int gN64HudOn;
+extern "C" int gta2_game_in_menu(void);
 #include <libdragon.h>
 #include <malloc.h>
 #include <stdio.h>
@@ -488,8 +491,32 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
             }
         }
     }
-    const u32 blend = (flags & kAdditive) ? kBlendAdditive : (flags & kAlphaBlend) ? kBlendAlpha : kBlendOpaque;
+    u32 blend = (flags & kAdditive) ? kBlendAdditive : (flags & kAlphaBlend) ? kBlendAlpha : kBlendOpaque;
 #ifdef N64
+    // N64: HUD layer (Hud::DrawGui): scaled up around the element's anchor and kept inside the TV-safe area
+    // front-end menus get the same pixel snapping and point sampling as the HUD (no scaling)
+    const bool crisp2d = gN64HudOn || gta2_game_in_menu();
+    if (crisp2d)
+    {
+        for (int i = 0; gN64HudOn && i < count; ++i)
+        {
+            gta2_n64_hud_xform(&v[i].x, &v[i].y);
+        }
+        // move the whole quad so its top-left corner sits on a framebuffer pixel (2 units of 640x480), keeping its size:
+        // snapping each corner on its own made letters of one line round to different heights
+        float mx = v[0].x, my = v[0].y;
+        for (int i = 1; i < count; ++i)
+        {
+            mx = v[i].x < mx ? v[i].x : mx;
+            my = v[i].y < my ? v[i].y : my;
+        }
+        const float dx = 2.0f * floorf(mx * 0.5f + 0.5f) - mx, dy = 2.0f * floorf(my * 0.5f + 0.5f) - my;
+        for (int i = 0; i < count; ++i)
+        {
+            v[i].x += dx;
+            v[i].y += dy;
+        }
+    }
     // N64: converte a textura agora (o motor reaproveita textura compartilhada, de dano e de digitos no mesmo quadro)
     u32 texId;
     {
@@ -498,6 +525,10 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
         const float a_tex = fabsf((v[1].u - v[0].u) * (v[2].v - v[0].v) - (v[2].u - v[0].u) * (v[1].v - v[0].v));
         texId = gta2_n64_tex_capture(reinterpret_cast<N64Tex*>(tex->field_1C_ptr), a_scr, a_tex, blend == kBlendAdditive);
     }
+    if (crisp2d)
+    {
+        blend |= 0x100; // HUD: point sampling (render_n64.c)
+    }
     if (gta2_n64_tex_token_empty(texId)) // textura sem nenhum pixel visivel: nao desenharia nada
     {
         return;
@@ -505,18 +536,24 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
 #else
     const u32 texId = static_cast<u32>(reinterpret_cast<intptr_t>(tex->field_1C_ptr));
 #endif
-    static const int kFan[2][3] = {{0, 1, 2}, {0, 2, 3}};
-    for (int t = 0; t < count - 2; ++t)
+    // converts the 3 or 4 corners once (2 divides per quad instead of 12) and pushes the 1 or 2 triangles together
+    static const int kFan[6] = {0, 1, 2, 0, 2, 3};
+    const float itw = 1.0f / tw, ith = 1.0f / th;
+    FrameVertex corner[4];
+    for (int i = 0; i < count; ++i)
     {
-        for (int c = 0; c < 3; ++c)
-        {
-            const Vert& s = v[kFan[t][c]];
-            const u32 d = s.diff;
-            FrameVertex fv = {s.x - 0.5f, s.y - 0.5f, s.w, s.u / tw, s.v / th,
-                              ((d >> 16) & 0xFF) | (d & 0xFF00) | ((d & 0xFF) << 16) | (d & 0xFF000000u)};
-            gta2_frame_push_vertex(texId, blend, fv);
-        }
+        const Vert& s = v[i];
+        const u32 d = s.diff;
+        corner[i] = {s.x - 0.5f, s.y - 0.5f, s.w, s.u * itw, s.v * ith,
+                     ((d >> 16) & 0xFF) | (d & 0xFF00) | ((d & 0xFF) << 16) | (d & 0xFF000000u)};
     }
+    FrameVertex tri[6];
+    const int n = (count - 2) * 3;
+    for (int i = 0; i < n; ++i)
+    {
+        tri[i] = corner[kFan[i]];
+    }
+    gta2_frame_push_vertices(texId, blend, tri, n);
 }
 
 // Tiles: default UVs cover the 64x64 tile; flags rotate (0x20/0x40/0x60) and
@@ -866,6 +903,60 @@ void CC gbh_FreeTexture(STexture* t)
     free(t);
 }
 
+} // extern "C"
+
+// ---------------------------------------------------------------------------
+// N64: one region reserved at boot and shared by the two largest short-lived users, which are never alive together:
+// the map's buffers (column index, column words, block table: ~850 KB on bil) during a level, and the half-size menu
+// screens while the front end is open (the game is torn down before the menu opens and the menu before a level loads).
+// Allocated from the heap on every level or menu load, they needed one free run of ~360 KB that the heap no longer had
+// after some play (out of memory with 1 MB free). Bump allocation; the owner resets it when it is torn down. Anything
+// that does not fit (or a second owner) falls back to the heap.
+namespace
+{
+u8* gBig;
+size_t gBigCap, gBigUsed;
+int gBigOwner; // 0 free, 1 menu, 2 map
+} // namespace
+
+extern "C" {
+void gta2_n64_big_prealloc(void)
+{
+    if (!gBig)
+    {
+        gBigCap = 880 * 1024;
+        gBig = static_cast<u8*>(memalign(64, gBigCap));
+        if (!gBig)
+        {
+            gBigCap = 0;
+        }
+    }
+}
+void* gta2_n64_big_alloc(int owner, size_t n)
+{
+    n = (n + 63) & ~static_cast<size_t>(63);
+    if (!gBig || (gBigOwner && gBigOwner != owner) || gBigUsed + n > gBigCap)
+    {
+        return nullptr;
+    }
+    gBigOwner = owner;
+    void* p = gBig + gBigUsed;
+    gBigUsed += n;
+    return p;
+}
+int gta2_n64_big_owns(const void* p)
+{
+    return gBig && static_cast<const u8*>(p) >= gBig && static_cast<const u8*>(p) < gBig + gBigCap;
+}
+void gta2_n64_big_reset(int owner)
+{
+    if (gBigOwner == owner)
+    {
+        gBigOwner = 0;
+        gBigUsed = 0;
+    }
+}
+
 s32 CC gbh_InitImageTable(s32 size)
 {
     gImages = static_cast<ImageEntry*>(calloc(size, sizeof(ImageEntry)));
@@ -879,9 +970,13 @@ s32 CC gbh_FreeImageTable()
         if (gImages[i].loaded)
         {
             gbh_FreeTexture(gImages[i].tex);
-            free(gImages[i].pixels);
+            if (!gta2_n64_big_owns(gImages[i].pixels))
+            {
+                free(gImages[i].pixels);
+            }
         }
     }
+    gta2_n64_big_reset(1);
     free(gImages);
     gImages = nullptr;
     gImageCount = 0;
@@ -971,7 +1066,11 @@ extern "C" s32 gta2_n64_image_from_rom(const char* path)
         }
         const int hw = (w + 1) / 2, hh = (h + 1) / 2;
         const size_t bytes = (static_cast<size_t>(hw) * hh * 2 + 63) & ~static_cast<size_t>(63);
-        u16* out = static_cast<u16*>(memalign(64, bytes));
+        u16* out = static_cast<u16*>(gta2_n64_big_alloc(1, bytes)); // shared region (see gta2_n64_big_alloc)
+        if (!out)
+        {
+            out = static_cast<u16*>(memalign(64, bytes));
+        }
         if (!out)
         {
             return -4;

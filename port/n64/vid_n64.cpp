@@ -12,7 +12,7 @@
 #include "3rdParty/GTA2Hax/DmaVideo/DmaVideo.hpp"
 #include "dma_video.hpp"
 #include "render/frame.h"
-#include "Game_0x40.hpp"
+#include "Game.hpp"
 #include "winmain.hpp"
 
 namespace
@@ -52,7 +52,7 @@ int gta2_port_set_view_width(int width)
     {
         gVideo->field_48_rect_right = gViewWidth;
     }
-    if (gGame_0x40_67E008 && gGame_0x40_67E008->field_38_orf1)
+    if (gGame_0x40_67E008 && gGame_0x40_67E008->field_38_local_player)
     {
         gCachedScreenDimension_706C58 = 0; // the original only re-applies on a height change
         UpdateGameScreenSize_5D8E00();

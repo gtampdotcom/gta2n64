@@ -3,7 +3,7 @@
 #include <windows.h>
 #include <string.h>
 #include "ImGuiDebug.hpp"
-#include "Network_20324.hpp"
+#include "NetUi.hpp"
 #include "platform/port_api.h"
 
 // ImGuiDebug.cpp nao entra no build (depende de ImGui); winmain.cpp referencia o callback.
@@ -18,7 +18,7 @@ extern "C" __attribute__((weak)) void gta2_n64_present(const void* cmds, int cmd
 }
 
 // Lobby DirectPlay: sem rede no N64.
-s32 Network_20324::cb_FillSessionList_519D30(Network_20324*, Network_NameList*)
+s32 NetUi::cb_FillSessionList_519D30(NetUi*, Network_NameList*)
 {
     return 0;
 }

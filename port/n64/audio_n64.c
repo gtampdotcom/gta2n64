@@ -41,6 +41,7 @@ typedef struct {
     waveform_t wf;
     uint8_t *ram;         /* copia na RAM (cache de efeitos) ou NULL */
     void *ram_alloc;      /* bloco alocado (ram pode estar 1 byte adiante, pela paridade do DMA) */
+    uint32_t ram_size;    /* bytes ocupados na arena (g_fxarena) */
     uint32_t last_use;    /* para tirar do cache o usado ha mais tempo */
     uint8_t plays;        /* quantas vezes tocou (sons sem loop entram no cache a partir da 2a) */
 } Wave;
@@ -124,12 +125,39 @@ static Wave *wave_get(const void *data, uint32_t len, int loops, int32_t ls, int
 }
 
 
+/* The cache lives in one fixed arena allocated at audio start-up. Allocated and freed one sound at a time on the heap,
+ * its blocks of every size were the main thing chopping the heap into pieces during play, and after a few level loads
+ * the map could no longer find room for its 360 KB column buffer (out of memory with 1 MB free). Inside the arena a
+ * sound goes in the first gap between the cached sounds that is large enough. */
+static uint8_t *g_fxarena;
+static void *fxarena_alloc(uint32_t sz)
+{
+    if (!g_fxarena) return NULL;
+    uint8_t *at = g_fxarena;
+    for (;;) {
+        /* the cached block that starts lowest at or after 'at' */
+        const Wave *next = NULL;
+        for (int i = 0; i < g_nwave; ++i) {
+            const Wave *o = &g_wave[i];
+            if (!o->ram_alloc) continue;
+            uint8_t *b = (uint8_t *)o->ram_alloc;
+            if (b + o->ram_size <= at) continue;
+            if (b < at) { at = b + o->ram_size; i = -1; next = NULL; continue; } /* overlaps 'at': skip past it and rescan */
+            if (!next || b < (uint8_t *)next->ram_alloc) next = o;
+        }
+        uint8_t *end = next ? (uint8_t *)next->ram_alloc : g_fxarena + FXCACHE_MAX;
+        if ((uint32_t)(end - at) >= sz) return at;
+        if (!next) return NULL;
+        at = (uint8_t *)next->ram_alloc + next->ram_size;
+    }
+}
+
 static void fxcache_free(Wave *w)
 {
     if (!w->ram) return;
     w->ram = NULL; /* antes de liberar: uma leitura seguinte volta para a ROM */
-    free(w->ram_alloc);
     w->ram_alloc = NULL;
+    w->ram_size = 0;
     g_fxcache_bytes -= w->len;
 }
 
@@ -149,12 +177,21 @@ static void fxcache_touch(Wave *w)
     }
     const uintptr_t odd = (uintptr_t)w->data & 1u;          /* dma_read exige a mesma paridade na RAM e na ROM */
     const uint32_t sz = (w->len + (uint32_t)odd + 15u) & ~15u; /* linhas de cache inteiras so deste bloco */
-    void *blk = memalign(16, sz);
+    void *blk = fxarena_alloc(sz);
+    for (int tries = 0; !blk && tries < 8; ++tries) { /* fragmented arena: drop the oldest and try again */
+        Wave *old = NULL;
+        for (int i = 0; i < g_nwave; ++i)
+            if (g_wave[i].ram && &g_wave[i] != w && (!old || g_wave[i].last_use < old->last_use)) old = &g_wave[i];
+        if (!old) return;
+        fxcache_free(old);
+        blk = fxarena_alloc(sz);
+    }
     if (!blk) return;
     uint8_t *ram = (uint8_t *)blk + odd;
     data_cache_hit_writeback_invalidate(blk, sz);
     dma_read(ram, (uint32_t)((uintptr_t)w->data & 0x1FFFFFFFu), w->len);
     w->ram_alloc = blk;
+    w->ram_size = sz;
     w->ram = ram;
     g_fxcache_bytes += w->len;
 }
@@ -199,6 +236,7 @@ void gta2_n64_audio_init(void)
     mixer_init(NVOICE + NSTREAM);
     for (int c = 0; c < NVOICE + NSTREAM; ++c) mixer_ch_set_limits(c, 16, MAX_FREQ, 0);
     wav64_init_compression(2); /* radios em ULC (audioconv64 --wav-compress ulc) */
+    g_fxarena = (uint8_t *)memalign(16, FXCACHE_MAX); /* sound-effect cache arena (fxarena_alloc) */
     g_inited = 1;
 }
 
@@ -297,6 +335,7 @@ typedef struct {
     int open;
     wav64_t wav;
     int volume, rate;
+    int vocal;       /* announcer vocal: the game already scales its volume by the sfx setting */
 } Strm;
 static Strm g_st[NSTREAM];
 
@@ -316,7 +355,7 @@ static void streams_refresh(void)
 static void stream_apply(Strm *s)
 {
     const int ch = stream_ch(s);
-    float v = (float)s->volume / 127.0f * ((float)g_vol_music * 0.1f) * GANHO_MUSICA;
+    float v = (float)s->volume / 127.0f * (s->vocal ? 1.0f : (float)g_vol_music * 0.1f) * GANHO_MUSICA;
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
     mixer_ch_set_vol(ch, v, v);
@@ -352,6 +391,7 @@ int gta2_n64_stream_open(int id, const char *path)
     if (s->open) { mixer_ch_stop(stream_ch(s)); wav64_close(&s->wav); s->open = 0; }
     wav64_open(&s->wav, p);
     s->id = id; s->open = 1; s->volume = 127; s->rate = 22050;
+    s->vocal = strstr(p, "/vocals/") != NULL;
     return 1;
 }
 

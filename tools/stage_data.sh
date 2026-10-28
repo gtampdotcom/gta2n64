@@ -43,7 +43,7 @@ for e in "$@"; do
     mkdir -p "$out/data/$(dirname "$low")"
     case "$low" in
       old\ *|*/old\ *|.ds_store|*/.ds_store|audio/*.raw|audio/*.sdt) ;;
-      gtaudio/*.wav) echo "$out/data/${low%.wav}.wav64" >> "$keep_list" ;;
+      gtaudio/*.wav|audio/vocals/*.wav) echo "$out/data/${low%.wav}.wav64" >> "$keep_list" ;;
       *) echo "$out/data/$low" >> "$keep_list" ;;
     esac
     case "$low" in
@@ -57,7 +57,19 @@ for e in "$@"; do
           "${N64_INST:-/opt/libdragon}/bin/audioconv64" --wav-compress ulc,quality=$RADIO_QUALITY --wav-mono --wav-resample "$RADIO_RATE" \
             -o "$out/data/gtaudio" "$f" >/dev/null || { echo "ERRO convertendo $f"; exit 1; }
           produced="$out/data/gtaudio/$(basename "${f%.*}").wav64"   # audioconv64 usa o nome original (pode ter maiusculas)
-          [ "$produced" != "$dst" ] && [ -f "$produced" ] && mv -f "$produced" "$dst" 2>/dev/null
+          # (through a temporary name: on a case-insensitive drive A.wav64 -> a.wav64 is otherwise a no-op,
+          #  and the clean-up below, which compares names case-sensitively, then deletes it)
+          [ "$produced" != "$dst" ] && [ -f "$produced" ] && mv -f "$produced" "$dst.tmp" 2>/dev/null && mv -f "$dst.tmp" "$dst" 2>/dev/null
+        fi ;;
+      audio/vocals/*.wav)
+        # announcer vocals ("Frenzy!", "Wasted"...): streamed like the radios, ULC mono at their own 22 kHz
+        dst="$out/data/${low%.wav}.wav64"
+        if [ "$radio_force" = 1 ] || [ ! -f "$dst" ] || [ "$f" -nt "$dst" ]; then
+          echo "    [VOCAL] $low"
+          "${N64_INST:-/opt/libdragon}/bin/audioconv64" --wav-compress ulc,quality=$RADIO_QUALITY --wav-mono \
+            -o "$out/data/audio/vocals" "$f" >/dev/null || { echo "ERRO convertendo $f"; exit 1; }
+          produced="$out/data/audio/vocals/$(basename "${f%.*}").wav64"
+          [ "$produced" != "$dst" ] && [ -f "$produced" ] && mv -f "$produced" "$dst.tmp" 2>/dev/null && mv -f "$dst.tmp" "$dst" 2>/dev/null
         fi ;;
       *.scr)
         # scripts de missao: conversao campo a campo (tools/scr_le2be.py + scr_tabela.json)
