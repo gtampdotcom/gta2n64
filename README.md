@@ -161,9 +161,9 @@ Rendering/tuning knobs (pass as `EXTRA_CFLAGS="-DNAME=value ..."`):
 
 # GTA 2 para Nintendo 64 — Port da versão PC
 
-Port **completo e jogável** de **Grand Theft Auto 2 para PC** no **Nintendo 64**, baseado na reconstrução de código [`gta2_re`](https://github.com/CriminalRETeam/gta2_re) e na [libdragon](https://github.com/DragonMinded/libdragon). Não é um port da versão de PlayStation: o **modo PSX** é uma configuração visual e de desempenho do próprio port de PC.
+Port de **Grand Theft Auto 2 para PC** no **Nintendo 64**, baseado na reconstrução de código [`gta2_re`](https://github.com/CriminalRETeam/gta2_re) e na [libdragon](https://github.com/DragonMinded/libdragon). Não é um port da versão de PlayStation: o **modo PSX** é uma configuração visual e de desempenho do próprio port de PC.
 
-A lógica do jogo é executada no console com um renderizador próprio para o RDP e camadas adaptadas de áudio, controles e arquivos. **Expansion Pak (8 MB de RAM) obrigatório.** Testado em Nintendo 64 real e no emulador [ares](https://ares-emu.net/).
+A lógica do jogo é executada no console com um renderizador próprio para o RDP e camadas adaptadas de áudio, controles e arquivos. **Expansion Pak (8 MB de RAM) obrigatório.** Este fork foi testado apenas no emulador [ares](https://ares-emu.net/) e não foi testado em um Nintendo 64 real com o Expansion Pak.
 
 ## Estado do projeto: finalizado
 
@@ -174,14 +174,14 @@ Este é um **port finalizado, não uma demonstração técnica**. A ROM completa
 | Recurso | Descrição |
 |---|---|
 | **Origem do port** | Versão PC, utilizando a lógica reconstruída pelo `gta2_re` |
-| **Modo PSX** | Configuração visual inspirada nas limitações do PlayStation, voltada ao desempenho; **30 FPS** nos testes do desenvolvedor em N64 real |
-| **Modo PC** | Distância ampliada da câmera e iluminação colorida/dinâmica inspirada no PC; cerca de **23–25 FPS** nos testes do desenvolvedor |
+| **Modo PSX** | Configurações visuais e iluminação reduzidas (modo meio-dia). Taxa de quadros melhor que no modo entardecer, mas ainda há lentidão; está longe de 30 FPS estáveis |
+| **Modo PC** | Distância ampliada da câmera e iluminação (modo entardecer). A taxa de quadros cai bastante neste modo |
 | **Conteúdo** | Conteúdo da versão PC preservado, incluindo **Mad Island** |
 | **Idiomas** | Inglês, espanhol e **português brasileiro** selecionáveis no menu |
 | **PT-BR nativo** | Tradução integrada ao sistema de textos **GXT** do jogo, não uma camada gráfica sobreposta |
-| **Hardware** | N64 real com Expansion Pak; também testado no ares |
+| **Hardware** | Testado apenas no ares; não testado em N64 real com Expansion Pak |
 
-As taxas de quadros são resultados relatados dos testes do desenvolvedor, não uma garantia de desempenho constante em todas as situações. O modo PSX **não** utiliza código da versão PlayStation. O projeto está concluído; não há previsão atual de novos recursos ou suporte. Contribuições por forks são bem-vindas.
+O modo PSX **não** utiliza código da versão PlayStation.
 
 ## Importante: o jogo não está incluído
 
