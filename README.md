@@ -6,7 +6,7 @@
 
 [🇺🇸 English](#english) · [🇧🇷 Português Brasileiro](#português-brasileiro)
 
-**Expansion Pak required / Expansion Pak obrigatório · ~59 MB ROM**
+**Expansion Pak required / Expansion Pak obrigatório · ~64 MB ROM**
 
 </div>
 
@@ -30,7 +30,7 @@ Personal / educational project. Not affiliated with or endorsed by Rockstar Game
 
 ## Project status and features
 
-This is a playable port of GTA 2 for Nintendo 64 that is still a **work in progress**. It preserves the PC version's game content, including the **Mad Island** bonus map absent from the PlayStation release. This fork has only been tested in ares, not on real N64 hardware. The full ROM is approximately **59 MB**.
+This is a playable port of GTA 2 for Nintendo 64 that is still a **work in progress**. It preserves the PC version's game content, including the **Mad Island** bonus map absent from the PlayStation release. This fork has only been tested in ares, not on real N64 hardware. The full ROM is approximately **64 MB**.
 
 The game includes **English, Spanish and Brazilian Portuguese**, with PT-BR integrated into the game's native GXT text system rather than drawn as a translation overlay. It also includes two selectable presentation modes:
 
@@ -96,7 +96,8 @@ The first build takes several minutes.
 
 `fstyle.sty`, `e.gxt`, `s.gxt`, the city maps (`bil`, `ste`, `wil`: `.gmp`, `.sty`, `.scr` and the mission folders), the bonus
 levels, `nyc.gci`, `test1.seq`, `attract/`, `keyboard/`, `frontend/` (menu screens), `audio/` (sound banks) and `gtaudio/` (radio WAVs).
-`movie/intro.bik` (the intro) is converted to H.264 at 320x240 with libdragon's `videoconv64` and played at power-on;
+`movie/intro.bik` (the intro) is converted to MPEG-1 at 320x240 with libdragon's `videoconv64` and played at power-on
+(MPEG-1 rather than the smaller H.264 because its decoder takes far less of the console's RAM, and the cartridge has room);
 A, B or Start skips it, and holding Z at boot skips it together with the menu.
 A missing file only prints a warning during the data step. `p.gxt` (Brazilian Portuguese text) is not part of the original game: if it is
 missing from the data folder, the data step generates it from `e.gxt` + `tools/pt_br.tsv` (`tools/make_pt_gxt.py`), so the language option
@@ -120,7 +121,7 @@ Pass them to `build.sh` or `make -f Makefile.recomp`:
 |---|---|
 | `GAME_DATA=/path/to/data` | Where the GTA 2 `data` folder is (default `../gta2_data/data`) |
 | `MAPS="bil ste wil"` | Cities to include (fewer = smaller ROM) |
-| `INCLUDE_INTRO=0` | Leave out the intro movie (about 5 MB). `INTRO_QUALITY=75` sets its quality (0..100; higher = bigger) |
+| `INCLUDE_INTRO=0` | Leave out the intro movie (about 11 MB). `INTRO_QUALITY=75` sets its quality (0..100; higher = bigger) |
 | `INCLUDE_FRONTEND=0` | Leave out the menu screens (smaller ROM; hold Z at boot to jump straight into the map) |
 | `RADIO_RATE=12000` | Radio sample rate in Hz (`8000` = smaller) |
 | `N64_INST=/path` | libdragon install location |
@@ -193,7 +194,7 @@ A lógica do jogo é executada no console com um renderizador próprio para o RD
 
 ## Estado do projeto: em desenvolvimento
 
-Este é um port jogável, mas ainda **em desenvolvimento**. Este fork foi testado apenas no ares, não em um N64 real. A ROM tem aproximadamente **59 MB** e preserva o conteúdo da versão PC, incluindo as cidades e o mapa bônus **Mad Island**, ausente na versão PlayStation.
+Este é um port jogável, mas ainda **em desenvolvimento**. Este fork foi testado apenas no ares, não em um N64 real. A ROM tem aproximadamente **64 MB** e preserva o conteúdo da versão PC, incluindo as cidades e o mapa bônus **Mad Island**, ausente na versão PlayStation.
 
 ### Recursos e diferenças
 
@@ -249,7 +250,7 @@ Se `p.gxt` não existir nos dados originais, o processo de compilação o gera a
 |---|---|
 | `GAME_DATA=/caminho/data` | Pasta dos dados originais |
 | `MAPS="bil ste wil"` | Cidades incluídas |
-| `INCLUDE_INTRO=0` | Deixa o filme de abertura de fora (cerca de 5 MB). `INTRO_QUALITY=75` define a qualidade (0..100; maior = arquivo maior) |
+| `INCLUDE_INTRO=0` | Deixa o filme de abertura de fora (cerca de 11 MB). `INTRO_QUALITY=75` define a qualidade (0..100; maior = arquivo maior) |
 | `INCLUDE_FRONTEND=0` | Remove telas do menu para reduzir a ROM |
 | `RADIO_RATE=12000` | Taxa de amostragem das rádios (Hz) |
 | `N64_INST=/caminho` | Instalação da libdragon |

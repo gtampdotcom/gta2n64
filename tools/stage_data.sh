@@ -55,8 +55,10 @@ for e in "$@"; do
     case "$low" in
       old\ *|*/old\ *|.ds_store|*/.ds_store) continue ;;
       movie/intro.bik)
-        # intro movie: Bink -> H.264 320x240 + audio, with libdragon's videoconv64 (needs ffmpeg). Played by intro_n64.c.
-        vdst="$out/data/intro.h264"; adst="$out/data/intro.wav64"; vcfg="h264-q${INTRO_QUALITY:-75}-320-a22050"
+        # intro movie: Bink -> MPEG-1 320x240 + audio, with libdragon's videoconv64 (needs ffmpeg). Played by intro_n64.c.
+        # MPEG-1 (not H.264, half the size): its decoder is much smaller, and that code stays in the console's RAM.
+        # 29.97 fps = twice the movie's 14.985: MPEG-1 has no 15 fps (the repeated frames cost almost no bits).
+        vdst="$out/data/intro.m1v"; adst="$out/data/intro.wav64"; vcfg="mpeg1-q${INTRO_QUALITY:-75}-320-30fps-a22050"
         vstamp="${out%/}.intro_cfg"
         if [ ! -f "$vdst" ] || [ ! -f "$adst" ] || [ "$f" -nt "$vdst" ] || [ "$(cat "$vstamp" 2>/dev/null)" != "$vcfg" ]; then
           ffdir=""; ffm=""
@@ -74,13 +76,13 @@ for e in "$@"; do
           if [ -z "$ffm" ]; then
             echo "AVISO: ffmpeg nao encontrado: a ROM fica sem o filme de abertura (instale o ffmpeg ou use INCLUDE_INTRO=0)"
           else
-            echo "    [INTRO] $low (H.264 320x240, quality ${INTRO_QUALITY:-75})"
+            echo "    [INTRO] $low (MPEG-1 320x240, quality ${INTRO_QUALITY:-75})"
             vtmp="$(mktemp -d)"; cp "$f" "$vtmp/intro.bik"
-            if N64_INST="${N64_INST:-/opt/libdragon}" "${N64_INST:-/opt/libdragon}/bin/videoconv64" -o "$vtmp" --codec h264 --width 320 \
+            if N64_INST="${N64_INST:-/opt/libdragon}" "${N64_INST:-/opt/libdragon}/bin/videoconv64" -o "$vtmp" --codec mpeg1 --fps 29.97 --width 320 \
                  --quality "${INTRO_QUALITY:-75}" --no-progress --audio-parms 22050,1 --audio-compress 1 \
                  --ffmpeg-path "$ffm" --ffprobe-path "$ffp" "$vtmp/intro.bik" >/dev/null 2>"$vtmp/log" \
-               && [ -s "$vtmp/intro.h264" ] && [ -s "$vtmp/intro.wav64" ]; then
-              cp "$vtmp/intro.h264" "$vdst" && cp "$vtmp/intro.wav64" "$adst" && echo "$vcfg" > "$vstamp"
+               && [ -s "$vtmp/intro.m1v" ] && [ -s "$vtmp/intro.wav64" ]; then
+              cp "$vtmp/intro.m1v" "$vdst" && cp "$vtmp/intro.wav64" "$adst" && echo "$vcfg" > "$vstamp"
             else
               echo "AVISO: a conversao do filme de abertura falhou (a ROM fica sem ele):"; tail -3 "$vtmp/log"
               rm -f "$vdst" "$adst"

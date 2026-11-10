@@ -16,7 +16,7 @@ FS_DIR     = filesystem_recomp
 # Z ao ligar para entrar direto no mapa).
 INCLUDE_FRONTEND ?= 1
 FRONTEND_DIR = $(if $(filter 1,$(INCLUDE_FRONTEND)),frontend,)
-# The game's intro movie (movie/intro.bik), converted to H.264 320x240 by libdragon's videoconv64: about 4 MB. Needs ffmpeg
+# The game's intro movie (movie/intro.bik), converted to MPEG-1 320x240 by libdragon's videoconv64: about 10 MB. Needs ffmpeg
 # on the build machine (on WSL the Windows ffmpeg.exe is enough); without it, or with INCLUDE_INTRO=0, the ROM has no intro.
 # INTRO_QUALITY = videoconv64's 0..100 quality scale.
 INCLUDE_INTRO ?= 1

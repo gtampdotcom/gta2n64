@@ -275,10 +275,10 @@ static void poll_input(void)
 
 int gta2_n64_gfx_active(void);
 /* ---- memory of the intro movie's code, reused after the movie ----
- * The linker script (tools/make_hot_ld.py) puts everything only the intro uses (libdragon's H.264 decoder and movie
- * player, ~80 KB) between these two symbols. The movie plays once, at power-on; after that the block is plain RAM and is
- * handed out here to buffers that live for the whole game (frame_n64.cpp), instead of them coming out of the heap: with
- * the decoder resident, the game had 130 KB less. Never free() what this returns. */
+ * The linker script (tools/make_hot_ld.py) puts everything only the intro uses (libdragon's MPEG-1 decoder and video
+ * layer, intro_n64.c: ~28 KB) between these two symbols. The movie plays once, at power-on; after that the block is plain
+ * RAM and is handed out here to buffers that live for the whole game (gbh_n64.cpp, frame_n64.cpp) instead of them taking
+ * heap or static space. Never free() what this returns. */
 extern char __n64_intro_text_start[] __attribute__((weak)), __n64_intro_text_end[] __attribute__((weak));
 static char *g_reclaim, *g_reclaim_end;
 static void reclaim_init(void)

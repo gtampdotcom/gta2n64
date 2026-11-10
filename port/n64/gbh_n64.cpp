@@ -360,12 +360,18 @@ struct LCacheEnt
     LightSum s;
 };
 constexpr int kLCacheN = 1024;
-LCacheEnt gLCache[kLCacheN];
+LCacheEnt* gLCache = nullptr; // kLCacheN entries (24 KB), set up at boot by gta2_n64_big_prealloc; none = no caching
 uint16_t gLEpoch = 1; // sobe a cada ResetLights (uma vez por quadro)
 inline const LightSum& CachedSum(const Vert& w, const Light* const* ls, u32 nls)
 {
     const int qx = static_cast<int>(w.x * 32.0f + 0.5f), qy = static_cast<int>(w.y * 32.0f + 0.5f), qz = static_cast<int>(w.z * 32.0f + 0.5f);
     const u32 h = (static_cast<u32>(qx) * 73856093u ^ static_cast<u32>(qy) * 19349663u ^ static_cast<u32>(qz) * 83492791u) >> 7;
+    if (!gLCache)
+    {
+        static LightSum sNoCache;
+        sNoCache = SumLights(w, ls, nls);
+        return sNoCache;
+    }
     LCacheEnt& e = gLCache[h & (kLCacheN - 1)];
     if (e.epoch != gLEpoch || e.qx != static_cast<int16_t>(qx) || e.qy != static_cast<int16_t>(qy) || e.qz != static_cast<int16_t>(qz))
     {
@@ -796,7 +802,7 @@ void CC gbh_ResetLights()
     gLightCount = 0;
     gActiveCount = 0;
     gBinUsed = 0;
-    if (++gLEpoch == 0) { memset(gLCache, 0, sizeof(gLCache)); gLEpoch = 1; }
+    if (++gLEpoch == 0) { if (gLCache) memset(gLCache, 0, sizeof(LCacheEnt) * kLCacheN); gLEpoch = 1; }
     memset(gBinHead, 0xFF, sizeof(gBinHead)); // -1 = celula vazia
 }
 s32 CC gbh_AddLight(SLight* l)
@@ -1025,8 +1031,18 @@ int gBigOwner; // 0 free, 1 menu, 2 map
 } // namespace
 
 extern "C" {
+void* gta2_n64_reclaim_alloc(size_t n); // main_n64.c: memory left behind by the intro movie's code; never freed
 void gta2_n64_big_prealloc(void)
 {
+    if (!gLCache) // the lighting cache lives for the whole game: it goes where the intro's decoder was, when that fits
+    {
+        void* m = gta2_n64_reclaim_alloc(sizeof(LCacheEnt) * kLCacheN);
+        gLCache = static_cast<LCacheEnt*>(m ? m : calloc(kLCacheN, sizeof(LCacheEnt)));
+        if (gLCache && m)
+        {
+            memset(gLCache, 0, sizeof(LCacheEnt) * kLCacheN);
+        }
+    }
     if (!gBig)
     {
         gBigCap = 880 * 1024;

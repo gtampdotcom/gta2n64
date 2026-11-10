@@ -23,11 +23,10 @@ if order and os.path.exists(order):
         line = line.split('#')[0].strip()
         if line and line not in names:
             names.append(line)
-# Code that only the intro movie uses (port/n64/intro_n64.c): libdragon's H.264 decoder and movie player, ~80 KB. It is
+# Code that only the intro movie uses (port/n64/intro_n64.c): libdragon's MPEG-1 decoder and video layer, ~28 KB. It is
 # linked as one block between two symbols; once the movie has played, main_n64.c gives that memory to the game's buffers
 # (gta2_n64_reclaim_alloc). Only objects that nothing else in the game calls may be listed here.
-INTRO_ONLY = ('*libdragon.a:h264_decoder.o', '*libdragon.a:h264.o', '*libdragon.a:yuv.o', '*libdragon.a:fmv.o',
-              '*libdragon.a:subtitles.o', '*libdragon.a:video.o', '*libdragon.a:video_sync.o', '*intro_n64.o')
+INTRO_ONLY = ('*libdragon.a:mpeg1.o', '*libdragon.a:yuv.o', '*libdragon.a:video.o', '*libdragon.a:video_sync.o', '*intro_n64.o')
 text = open(src, encoding='utf-8').read()
 anchor = '        *(.text)\n'
 if text.count(anchor) == 1:
