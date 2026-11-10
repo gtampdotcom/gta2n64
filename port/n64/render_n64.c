@@ -47,60 +47,24 @@ static int g_next;
 static int g_active;
 static uint32_t g_frames;
 
-/* Blocos de upload por slot (ver N64_UPLOAD_BLOCKS mais abaixo). Liberacao ADIADA: um bloco ja pode estar na fila do RSP/RDP, entao
- * ele so e liberado 4 quadros depois de largado (ou apos rspq_wait se a lista encher). Chamado ao reconverter o slot e quando a textura
- * dona e' esquecida (troca de fase), para nao deixar centenas de blocos pequenos espalhados pelo heap (fragmentacao). */
-#define UBLK_PEND_N 64
-static rspq_block_t *g_ublk_pend[UBLK_PEND_N];
-static uint32_t g_ublk_pend_f[UBLK_PEND_N];
-static int g_ublk_npend;
-static rspq_block_t *g_ublk[CACHE_N];
-static uint8_t g_ublk_n[CACHE_N];
-static int g_ublk_live;
-static void ublk_release(int slot)
-{
-    rspq_block_t *b = g_ublk[slot];
-    g_ublk_n[slot] = 0;
-    if (!b) return;
-    g_ublk[slot] = NULL;
-    --g_ublk_live;
-    if (g_ublk_npend >= UBLK_PEND_N) {
-        rspq_wait();
-        for (int i = 0; i < g_ublk_npend; ++i) rspq_block_free(g_ublk_pend[i]);
-        g_ublk_npend = 0;
-    }
-    g_ublk_pend[g_ublk_npend] = b;
-    g_ublk_pend_f[g_ublk_npend] = g_frames;
-    ++g_ublk_npend;
-}
 /* 1 se ha memoria folgada para gravar um bloco (o rdpq aborta o jogo com 'Out of memory' se faltar no meio da gravacao) */
 /* RESERVA para o motor: os blocos de upload/texto sao so cache de velocidade e nao podem comer a folga que o jogo precisa para alocar
  * em tempo de execucao (texturas sob demanda, scripts, sons): sem isso o heap enchia aos poucos e o motor abortava com 'Out of memory'. */
 #ifndef N64_HEAP_RESERVE_KB
 #define N64_HEAP_RESERVE_KB 320
 #endif
-#define UBLK_MAX_LIVE 128 /* blocos de upload vivos ao mesmo tempo (~2,4 KB cada) */
 extern char *__heap_top;
 static int heap_has_room(void)
 {
+#ifdef N64_NO_TEXT_BLOCKS
+    return 0; /* test builds: never record RSP blocks, so every primitive goes through the direct path */
+#endif
     if ((long)(__heap_top - (char *)sbrk(0)) < (long)N64_HEAP_RESERVE_KB * 1024) return 0; /* a folga ainda nao pedida ao sistema (apos o fim do heap atual) */
     void *p = malloc(24 * 1024);
     if (!p) return 0;
     free(p);
     return 1;
 }
-static void ublk_reap(void)
-{
-    for (int i = 0; i < g_ublk_npend; ) {
-        if ((uint32_t)(g_frames - g_ublk_pend_f[i]) >= 4u) {
-            rspq_block_free(g_ublk_pend[i]);
-            --g_ublk_npend;
-            g_ublk_pend[i] = g_ublk_pend[g_ublk_npend];
-            g_ublk_pend_f[i] = g_ublk_pend_f[g_ublk_npend];
-        } else ++i;
-    }
-}
-
 /* opcoes do laboratorio */
 static int g_opt_filter = 1;
 static int g_opt_persp = 1;                    /* perspectiva SEMPRE ligada em tudo (modo 1); nao ha mais como alterar */
@@ -121,7 +85,7 @@ void gta2_n64_render_toggle(int which)
 
 void gta2_n64_tex_forget(const N64Tex *t)
 {
-    if (t && t->slot >= 0 && t->slot < CACHE_N && g_c[t->slot].owner == t) { g_c[t->slot].owner = 0; ublk_release(t->slot); }
+    if (t && t->slot >= 0 && t->slot < CACHE_N && g_c[t->slot].owner == t) { g_c[t->slot].owner = 0; }
 }
 
 /* devolve a entrada do cache para a textura (convertendo se preciso); -1 se nao ha dados */
@@ -198,12 +162,6 @@ static int g_palc_next;
 /* additive: textura desenhada com mistura aditiva no PC. No N64 ela vira transparencia comum (o RDP estoura a soma),
  * entao os pixels quase pretos -- que na soma nao apareciam -- viram transparentes na conversao. */
 #define ADD_CUT 48u /* r+g+b abaixo disto = "preto" de textura aditiva */
-/* UPLOAD EM BLOCO: o upload de cada slot (rdpq_tex_upload, ~40 us de CPU cada, ~130 por quadro) e' gravado uma vez num bloco do RSP
- * e depois so' executado (1 comando). Grava na 2a vez que o slot e' usado com o mesmo conteudo; o bloco e' liberado quando o slot e'
- * reconvertido (o slot so' e' reaproveitado apos CACHE_GUARD quadros sem uso, entao o RDP ja nao o executa). 0 = desliga (volta ao antigo). */
-#ifndef N64_UPLOAD_BLOCKS
-#define N64_UPLOAD_BLOCKS 1
-#endif
 static int s_rec;                                /* 1 enquanto grava um bloco maior (texto estatico): nao se aninha gravacao */
 static uint32_t g_slot_ver[CACHE_N];            /* sobe a cada conversao: identifica o conteudo atual do slot (para pular o upload) */
 extern const uint32_t *gta2_n64_palette_ptr(int id);
@@ -390,7 +348,6 @@ conv_done_loop:
     }
     data_cache_hit_writeback(dst, (unsigned long)pw * th * 2);
     ++g_slot_ver[slot];
-    ublk_release(slot);
     g_c[slot].owner = t; g_c[slot].gen = t->gen; g_c[slot].tw = (uint16_t)tw; g_c[slot].th = (uint16_t)th; g_c[slot].pw = (uint16_t)pw;
     g_c[slot].used = g_frames + 1;
     g_c[slot].req = scale;
@@ -572,6 +529,31 @@ static int try_texrect(const FVert *p, float sx, float sy, float ts, float tt)
     return 1;
 }
 
+/* Texture upload with the RDP commands written directly. This is the exact sequence rdpq_tex_upload(TILE0, surface, NULL)
+ * emits for an RGBA16 surface (same tiles, same LOAD_BLOCK / LOAD_TILE choice), without its per-call set-up: that set-up was
+ * ~40 us of CPU, about 120 times per frame. (The earlier answer to that cost, one recorded RSP block per cache slot, needed
+ * 320 KB of spare heap and so was switched off most of the time; it is gone.)
+ * LOAD_BLOCK's dxt is 1.11 fixed point, so each width only loads so many lines exactly: same table as libdragon (rdpq_tex.c). */
+static const uint8_t kBlockMaxLines[] = { 20, 42, 26, 14, 19, 32, 13, 28, 26, 8, 9, 4, 4, 5, 20, 13, 18, 3, 6, 3, 2, 16, 2, 2, 3, 14, 2,
+                                          13, 2, 1, 12, 4, 2, 2, 2, 2, 2, 2, 4, 10, 0, 1, 2, 9, 0, 1, 8, 0, 2, 0, 1, 0, 1, 8 };
+static void tex_upload_raw(int slot)
+{
+    const CEnt *e = &g_c[slot];
+    const int pw = e->pw, th = e->th, pitch = pw * 2; /* pw is a multiple of 4: the pitch is a multiple of 8 bytes */
+    const int words = pw >> 2;                        /* 64-bit words per line */
+    const int max_lines = words < 11 ? 4096 : (words - 11 < (int)sizeof(kBlockMaxLines) ? kBlockMaxLines[words - 11] : 0);
+    rdpq_set_texture_image_raw(0, PhysicalAddr(g_cbuf + (size_t)slot * SLOT_U16), FMT_RGBA16, (uint16_t)pw, (uint16_t)th);
+    if (th <= max_lines) {
+        rdpq_set_tile(TILE1, FMT_RGBA16, 0, 0, NULL);
+        rdpq_set_tile(TILE0, FMT_RGBA16, 0, (uint16_t)pitch, NULL);
+        rdpq_load_block(TILE1, 0, 0, (uint16_t)(pw * th), (uint16_t)pitch);
+    } else {
+        rdpq_set_tile(TILE0, FMT_RGBA16, 0, (uint16_t)pitch, NULL);
+        rdpq_load_tile_fx(TILE0, 0, 0, (uint16_t)(pw * 4), (uint16_t)(th * 4));
+    }
+    rdpq_set_tile_size_fx(TILE0, 0, 0, (uint16_t)(pw * 4), (uint16_t)(th * 4));
+}
+
 /* ---- desenho de um comando (usado direto e dentro de blocos gravados do RSP) ---- */
 static int s_valid, s_tex = -1, s_blend = -1;      /* modo ja configurado no RDP */
 static int s_up_slot = -1; static uint32_t s_up_ver; /* textura que ja esta na TMEM (slot + versao): evita reenviar */
@@ -678,21 +660,7 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         if (s_up_slot == slot && s_up_ver == g_slot_ver[slot]) {
             /* a mesma textura ja esta na TMEM */
         } else {
-            const CEnt *e = &g_c[slot];
-            surface_t surf = surface_make(g_cbuf + (size_t)slot * SLOT_U16, FMT_RGBA16, e->pw, e->th, e->pw * 2);
-#if N64_UPLOAD_BLOCKS
-            if (g_ublk[slot] && !s_rec) {
-                rspq_block_run(g_ublk[slot]);
-
-            } else if (!s_rec && g_ublk_n[slot] < 255 && ++g_ublk_n[slot] >= 2 && g_ublk_live < UBLK_MAX_LIVE && heap_has_room()) {
-                rspq_block_begin();
-                rdpq_tex_upload(TILE0, &surf, NULL);
-                rspq_block_t *ub = rspq_block_end();
-                if (ub) { g_ublk[slot] = ub; ++g_ublk_live; rspq_block_run(ub); }
-                else rdpq_tex_upload(TILE0, &surf, NULL);
-            } else
-#endif
-            rdpq_tex_upload(TILE0, &surf, NULL);
+            tex_upload_raw(slot);
             s_up_slot = slot; s_up_ver = g_slot_ver[slot];
             PROF_COUNT(PC_UPLOADS, 1);
 
@@ -881,7 +849,6 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
         PROF_LEAVE();
     }
 #endif
-    ublk_reap();
 
     const FCmd *cmds = (const FCmd *)cmds_;
     const FVert *verts = (const FVert *)verts_;
@@ -961,7 +928,7 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
 #ifdef N64_MEMLOG
     { static unsigned peak; unsigned n = 0, cur = 0, wasted = 0; for (int i = 0; i < CACHE_N; ++i) { if (g_c[i].used && g_frames - g_c[i].used < CACHE_GUARD) { ++n; wasted += 4096 - (unsigned)g_c[i].pw * g_c[i].th * 2; } if (g_c[i].used) ++cur; }
       if (n > peak) { peak = n; }
-      if ((g_frames % 120) == 0) { unsigned nb = 0; for (int i = 0; i < CACHE_N; ++i) if (g_ublk[i]) ++nb; debugf("[tcache] inuse=%u peak=%u everused=%u wasted=%uKB ublk=%u live=%d headroom=%ldKB\n", n, peak, cur, wasted / 1024, nb, g_ublk_live, (long)(__heap_top - (char *)sbrk(0)) / 1024); } }
+      if ((g_frames % 120) == 0) { debugf("[tcache] inuse=%u peak=%u everused=%u wasted=%uKB headroom=%ldKB\n", n, peak, cur, wasted / 1024, (long)(__heap_top - (char *)sbrk(0)) / 1024); } }
 #endif
     PROF_ENTER(PF_AUDIO); gta2_n64_audio_poll(); PROF_LEAVE();
     PROF_LEAVE();
