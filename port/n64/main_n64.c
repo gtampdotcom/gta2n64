@@ -154,7 +154,7 @@ double gta2_n64_now_ms(void)
 #define N64_LAB_KEYS 0 /* 1 = L/R/C-cima alternam filtro/perspectiva/depuracao do render (em vez de proxima arma/freio/entrar no carro) */
 #endif
 typedef struct { int sc, vk; } KeyDef;
-enum { K_UP, K_DOWN, K_LEFT, K_RIGHT, K_W, K_S, K_A, K_D, K_ENTER, K_ATTACK, K_JUMP, K_ESC, K_PREV, K_NEXT, K_RADIO, K_SPECIAL, K_PAUSE, K_COUNT };
+enum { K_UP, K_DOWN, K_LEFT, K_RIGHT, K_W, K_S, K_A, K_D, K_ENTER, K_ATTACK, K_JUMP, K_ESC, K_PREV, K_NEXT, K_RADIO, K_SPECIAL, K_PAUSE, K_LOOK, K_COUNT };
 static const KeyDef kKeys[K_COUNT] = {
     {0xC8, 0x26}, {0xD0, 0x28}, {0xCB, 0x25}, {0xCD, 0x27}, // setas (menus)
     {0x11, 0x57}, {0x1F, 0x53}, {0x1E, 0x41}, {0x20, 0x44}, // W S A D (jogo)
@@ -163,6 +163,7 @@ static const KeyDef kKeys[K_COUNT] = {
     {0x3B, 0x70},                                           // F1: proxima estacao de radio
     {0x17, 0x49},                                           // I: especial (buzina etc.; slot 9 dos controles)
     {0x40, 0x75},                                           // F6: pausa (TogglePause do motor)
+    {0x18, 0x4F},                                           // O: special 2 = the PC's Alt camera look (control slot 10)
 };
 static uint8_t gKeyDown[K_COUNT];
 
@@ -256,7 +257,18 @@ static void poll_input(void)
     set_key(K_NEXT, !menu && !blank && in.btn.l);
     set_key(K_PREV, !menu && !blank && in.btn.c_left);
     set_key(K_SPECIAL, !menu && !blank && in.btn.c_right);
-    set_key(K_RADIO, !blank && in.btn.c_down); /* C-baixo troca a radio */
+    {   /* C-down: held with a direction it is the PC's Alt (camera look); tapped on its own it changes the radio station,
+           on release, so that looking around does not also change the station */
+        static int cd_prev, cd_used, radio_pulse;
+        const int cd = !blank && in.btn.c_down;
+        if (cd && !menu && (left || right || dup || ddown)) cd_used = 1;
+        if (!cd && cd_prev && !cd_used) radio_pulse = 2;
+        if (!cd) cd_used = 0;
+        cd_prev = cd;
+        set_key(K_LOOK, !menu && cd);
+        set_key(K_RADIO, radio_pulse > 0);
+        if (radio_pulse > 0) --radio_pulse;
+    }
     /* Fila de eventos de teclado do jogo: no menu e no bloqueio de entrada ela e esvaziada todo quadro. Sem isso, as teclas apertadas no menu
      * (B = ESC, Enter, setas) ficavam guardadas e o jogo as lia todas de uma vez ao comecar a partida: o ESC abria "sair do jogo", o Enter
      * seguinte confirmava e o jogo voltava ao menu; as setas guardadas faziam o personagem/carro "enlouquecer". */
