@@ -147,7 +147,7 @@ Measuring (output on the debug channel: ISViewer in ares, or USB):
 |---|---|
 | `N64_PROF` | Per-frame timing by phase (`[prof]` lines), a `[bench]` summary for frames `N64_BENCH_F0`..`N64_BENCH_F1` (300..1100) and checksums of the draw lists and of the framebuffer (`[benchsum]`): an optimisation that keeps the picture keeps the `fbhash` |
 | `N64_BENCH` | Scripted pad (walks and turns by frame number), so every build plays the same frames. Use with `N64_BOOT_MAP=0..2` |
-| `N64_PROF_SAMPLE` | Sampling profiler (`[smp]` lines). `python3 tools/prof_order.py build/gta2_recomp.map ares_output.txt > port/n64/hot_order.txt` turns a run into a new hot-function list |
+| `N64_PROF_SAMPLE` | Sampling profiler (`[smp]` lines). `python3 tools/prof_order.py build_recomp/gta2_recomp.map ares_output.txt > port/n64/hot_order.txt` turns a run into a new hot-function list |
 | `N64_PROF_DUMP=frame` | Dumps that frame as hex text (`[fb]` lines) |
 | `N64_MICROBENCH` | Prints at boot what an instruction, a cache miss and float maths cost on the machine |
 
