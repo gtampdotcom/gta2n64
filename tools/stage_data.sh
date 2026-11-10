@@ -22,6 +22,11 @@ radio_cfg="ulc$RADIO_QUALITY-mono-$RADIO_RATE"
 radio_stamp="${out%/}.radio_cfg"
 radio_force=0
 [ "$(cat "$radio_stamp" 2>/dev/null)" = "$radio_cfg" ] || radio_force=1
+# menu screens: target size (the framebuffer: 640x240). If it changes, all of them are converted again.
+img_cfg="n64i-${N64_IMG_W:-640}x${N64_IMG_H:-240}"
+img_stamp="${out%/}.img_cfg"
+img_force=0
+[ "$(cat "$img_stamp" 2>/dev/null)" = "$img_cfg" ] || img_force=1
 # Bancos de efeitos sonoros: UM sfx.raw compartilhado entre os mapas (tools/sfx_share.py), em vez de 6 MB por mapa.
 SFX_MAPS="${SFX_MAPS:-bil ste wil}"
 keep_list="${out%/}.staged_list"; : > "$keep_list"
@@ -48,7 +53,15 @@ for e in "$@"; do
     esac
     case "$low" in
       old\ *|*/old\ *|.ds_store|*/.ds_store) continue ;;
-      *.gxt|*.sty|*.gmp|*.tga)
+      *.tga)
+        # menu screens: resampled here to the size they cover on the N64 framebuffer (tools/img_n64.py), not at run time.
+        # Redone only when the source, the converter or the target size changed.
+        dst="$out/data/$low"
+        if [ "$img_force" = 1 ] || [ ! -f "$dst" ] || [ "$f" -nt "$dst" ] || [ "$here/img_n64.py" -nt "$dst" ]; then
+          echo "    [IMG] $low (${N64_IMG_W:-640}x${N64_IMG_H:-240})"
+          python3 "$here/img_n64.py" "$f" "$dst" "${N64_IMG_W:-640}" "${N64_IMG_H:-240}" || { echo "ERRO convertendo $f"; exit 1; }
+        fi ;;
+      *.gxt|*.sty|*.gmp)
         python3 "$here/le2be.py" "$f" "$out/data/$low" || { echo "ERRO convertendo $f"; exit 1; } ;;
       gtaudio/*.wav)
         dst="$out/data/${low%.wav}.wav64"
@@ -88,3 +101,4 @@ sort -u "$keep_list" -o "$keep_list"
 find "$out/data" -type f | sort | comm -23 - "$keep_list" | while IFS= read -r f; do rm -f "$f" && echo "    [PODA] ${f#$out/data/}"; done
 find "$out/data" -mindepth 1 -type d -empty -delete 2>/dev/null
 echo "$radio_cfg" > "$radio_stamp"
+echo "$img_cfg" > "$img_stamp"

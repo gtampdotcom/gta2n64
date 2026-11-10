@@ -40,7 +40,7 @@ typedef struct { uint32_t kind, texture, blend, first, count, colour; int32_t re
 #define SLOT_U16    2048          /* 4096 bytes por entrada = TMEM inteira em RGBA16 */
 #define MAX_TEXELS  2048
 
-typedef struct { const N64Tex *owner; uint16_t gen, tw, th, pw; uint32_t used; float req; uint8_t empty, add; } CEnt; /* empty = nenhum texel visivel */ /* used = g_frames+1 do ultimo uso (0 = nunca); req = escala pedida na conversao */
+typedef struct { const N64Tex *owner; uint16_t gen, tw, th, pw; uint32_t used; float req, reqy; uint8_t empty, add; } CEnt; /* reqy > 0: converted per axis (req = x scale, reqy = y scale) for 2D */ /* empty = nenhum texel visivel */ /* used = g_frames+1 do ultimo uso (0 = nunca); req = escala pedida na conversao */
 #define SCALE_MIN   0.25f  /* menor reducao aceita por escala de tela */
 #define SCALE_UP    1.25f  /* reconverte (maior) se a textura passar a aparecer 25% maior na tela */
 #define CACHE_GUARD 3  /* quadros que um slot fica protegido apos o uso: o RDP le a textura depois, de forma assincrona */
@@ -188,8 +188,13 @@ void gta2_n64_render_prealloc(void)
  * functions that run for every draw are linked next to each other (port/n64/hot_order.txt). A rarely taken branch
  * inlined into one of them would only push the others out of the cache. */
 #define COLD_FN __attribute__((noinline, cold))
-static int tex_convert(N64Tex *t, float scale, int additive);
-static int tex_slot(N64Tex *t, float scale, int additive)
+static int tex_convert(N64Tex *t, float scale, float scale_y, int additive);
+/* scale_y <= 0: one scale for both axes, and a copy converted for a bigger size is good enough (world sprites, tiles).
+ * scale_y > 0: HUD and menu art (fonts above all). The framebuffer is 640x240, so 2D drawn for 640x480 keeps its width and
+ * loses half its height; one averaged scale made the copy too narrow and too tall, and drawing it stretched one way and
+ * squeezed the other with point sampling dropped rows of the letters. Here the copy is filtered per axis to the size it
+ * covers on screen, so it is drawn texel for pixel; it is reused only for (nearly) the same size. */
+static int tex_slot(N64Tex *t, float scale, float scale_y, int additive)
 {
     if (!t) return texfail(t, 0);
     if (t->palid >= 0) { /* a paleta pode ter sido registrada (ou trocada) depois da textura */
@@ -205,7 +210,10 @@ static int tex_slot(N64Tex *t, float scale, int additive)
     if (t->slot >= 0 && g_c[t->slot].owner == t && g_c[t->slot].gen == t->gen && g_c[t->slot].add != (uint8_t)additive)
         g_c[t->slot].owner = 0; /* mesma textura pedida no outro modo (aditivo x normal): reconverte */
     if (t->slot >= 0 && g_c[t->slot].owner == t && g_c[t->slot].gen == t->gen) {
-        if (scale <= g_c[t->slot].req * SCALE_UP) { g_c[t->slot].used = g_frames + 1; return t->slot; }
+        const CEnt *const e = &g_c[t->slot];
+        const int ok = scale_y > 0.0f ? (e->reqy > 0.0f && fabsf(scale - e->req) <= 0.02f * e->req && fabsf(scale_y - e->reqy) <= 0.02f * e->reqy)
+                                      : (e->reqy <= 0.0f && scale <= e->req * SCALE_UP);
+        if (ok) { g_c[t->slot].used = g_frames + 1; return t->slot; }
         g_c[t->slot].owner = 0; /* aparece maior que na conversao: reconverte com mais resolucao (so cresce) */
     }
     if (!g_cbuf) {
@@ -213,19 +221,22 @@ static int tex_slot(N64Tex *t, float scale, int additive)
         if (!g_cbuf) return -1;
         memset(g_c, 0, sizeof(g_c));
     }
-    return tex_convert(t, scale, additive);
+    return tex_convert(t, scale, scale_y, additive);
 }
 
 /* converts the texture into a cache slot (the slow part of tex_slot: only when a texture is new or shown bigger) */
-static __attribute__((noinline)) int tex_convert(N64Tex *t, float scale, int additive)
+static __attribute__((noinline)) int tex_convert(N64Tex *t, float scale, float scale_y, int additive)
 {
     PROF_ENTER(PF_TEXCONV); PROF_COUNT(PC_CONV, 1);
     const int w = t->w, h = t->h;
     int tw = w, th = h;
+    const float scy = scale_y > 0.0f ? scale_y : scale;
     if (scale < 0.95f) { /* reduz para o tamanho na tela (sprites: ~metade; blocos: ~44 de 64) */
         tw = (int)((float)w * scale + 0.5f);
-        th = (int)((float)h * scale + 0.5f);
         if (tw < 1) tw = 1;
+    }
+    if (scy < 0.95f) {
+        th = (int)((float)h * scy + 0.5f);
         if (th < 1) th = 1;
     }
     if (tw * th > MAX_TEXELS) { /* limite da TMEM (4 KB em RGBA16) */
@@ -365,6 +376,7 @@ conv_done_loop:
     g_c[slot].owner = t; g_c[slot].gen = t->gen; g_c[slot].tw = (uint16_t)tw; g_c[slot].th = (uint16_t)th; g_c[slot].pw = (uint16_t)pw;
     g_c[slot].used = g_frames + 1;
     g_c[slot].req = scale;
+    g_c[slot].reqy = scale_y;
     g_c[slot].empty = (uint8_t)!any_opaque;
     g_c[slot].add = (uint8_t)additive;
     t->slot = (int16_t)slot;
@@ -420,7 +432,20 @@ uint32_t gta2_n64_tex_capture(N64Tex *t, float a_scr, float a_tex, int additive)
         if (scale > 1.0f) scale = 1.0f;
         if (scale < SCALE_MIN) scale = SCALE_MIN;
     }
-    const int slot = tex_slot(t, scale, additive);
+    const int slot = tex_slot(t, scale, 0.0f, additive);
+    return slot < 0 ? 0u : TEX_TOKEN_BASE + (uint32_t)slot;
+}
+/* 2D art (HUD, menus): kx, ky = pixels of the 640x480 reference space per texel along each axis (gbh_n64.cpp Draw) */
+uint32_t gta2_n64_tex_capture_xy(N64Tex *t, float kx, float ky, int additive)
+{
+    if (!t) return 0;
+    float fx = kx * g_last_sx, fy = ky * g_last_sy;
+    if (!(fx > 0.0f) || !(fy > 0.0f)) return gta2_n64_tex_capture(t, 0.0f, 0.0f, additive);
+    if (fx > 1.0f) fx = 1.0f;
+    if (fy > 1.0f) fy = 1.0f;
+    if (fx < SCALE_MIN) fx = SCALE_MIN;
+    if (fy < SCALE_MIN) fy = SCALE_MIN;
+    const int slot = tex_slot(t, fx, fy, additive);
     return slot < 0 ? 0u : TEX_TOKEN_BASE + (uint32_t)slot;
 }
 
@@ -595,29 +620,31 @@ static int s_up_slot = -1; static uint32_t s_up_ver; /* textura que ja esta na T
 
 /* kind 3: imagem do menu (gbh_BlitImage). A copia reduzida na metade (RGBA5551, RAM) vem de gbh_n64.cpp; rdpq_tex_blit divide em
  * pedacos que cabem na TMEM. Origem em pixels da imagem inteira (cm->rect), destino (cm->first, cm->count) no espaco 640x480. */
-extern const uint16_t *gta2_n64_image_get(int idx, int *w, int *h);
+extern const uint16_t *gta2_n64_image_get(int idx, int *stw, int *sth, int *lw, int *lh);
 static void blit_img(const FCmd *cm, float sx, float sy)
 {
-    int hw = 0, hh = 0;
-    const uint16_t *px = gta2_n64_image_get((int)cm->texture, &hw, &hh);
-    if (!px || hw <= 0 || hh <= 0) return;
+    int stw = 0, sth = 0, lw = 0, lh = 0; /* stored size, and the size the game lays the image out in (640x480 space) */
+    const uint16_t *px = gta2_n64_image_get((int)cm->texture, &stw, &sth, &lw, &lh);
+    if (!px || stw <= 0 || sth <= 0 || lw <= 0 || lh <= 0) return;
     const int l = cm->rect[0], t = cm->rect[1], r = cm->rect[2], b = cm->rect[3];
     if (r <= l || b <= t) return;
-    const int s0 = l / 2, t0 = t / 2;
-    int sw = (r - l + 1) / 2, sh = (b - t + 1) / 2;
-    if (s0 + sw > hw) sw = hw - s0;
-    if (t0 + sh > hh) sh = hh - t0;
+    /* the source rectangle, from layout pixels to stored pixels (the build stores the image at framebuffer size, so on the
+       640x240 framebuffer this ends up 1:1: nothing is scaled when drawing) */
+    const int s0 = l * stw / lw, t0 = t * sth / lh;
+    int sw = ((r - l) * stw + lw / 2) / lw, sh = ((b - t) * sth + lh / 2) / lh;
+    if (s0 + sw > stw) sw = stw - s0;
+    if (t0 + sh > sth) sh = sth - t0;
     if (sw <= 0 || sh <= 0) return;
-    surface_t surf = surface_make((void *)px, FMT_RGBA16, (uint16_t)hw, (uint16_t)hh, (uint16_t)(hw * 2));
+    surface_t surf = surface_make((void *)px, FMT_RGBA16, (uint16_t)stw, (uint16_t)sth, (uint16_t)(stw * 2));
+    const float kx = (float)(r - l) * sx / (float)sw, ky = (float)(b - t) * sy / (float)sh;
+    const int exact = kx > 0.999f && kx < 1.001f && ky > 0.999f && ky < 1.001f;
     rdpq_set_mode_standard();
-    rdpq_mode_filter(FILTER_BILINEAR);
+    rdpq_mode_filter(exact ? FILTER_POINT : FILTER_BILINEAR);
     rdpq_mode_combiner(RDPQ_COMBINER_TEX);
     rdpq_blitparms_t bp;
     memset(&bp, 0, sizeof(bp));
     bp.s0 = s0; bp.t0 = t0; bp.width = sw; bp.height = sh;
-    bp.scale_x = (float)(r - l) * sx / (float)sw;
-    bp.scale_y = (float)(b - t) * sy / (float)sh;
-    bp.filtering = true;
+    if (!exact) { bp.scale_x = kx; bp.scale_y = ky; bp.filtering = true; }
     rdpq_tex_blit(&surf, (float)(int32_t)cm->first * sx, (float)(int32_t)cm->count * sy, &bp);
 }
 
@@ -841,7 +868,7 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         if (slot >= 0) g_c[slot].used = g_frames + 1;
     } else {
         N64Tex *tx = (N64Tex *)(uintptr_t)cm->texture;
-        slot = DBG_FLAT ? -1 : tex_slot(tx, cmd_scale(cm, verts, tx, sx, sy), (cm->blend & 0xFFu) == 2);
+        slot = DBG_FLAT ? -1 : tex_slot(tx, cmd_scale(cm, verts, tx, sx, sy), 0.0f, (cm->blend & 0xFFu) == 2);
     }
     if (slot < 0 && (cm->blend & 0xFFu) != 0 && !DBG_FLAT) return; /* sem dados e translucido: pula */
 

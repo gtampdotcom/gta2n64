@@ -824,7 +824,7 @@ index 8d11ea67..2359f866 100644
      x += other.x;
      y += other.y;
 diff --git a/Source/Frontend.cpp b/Source/Frontend.cpp
-index 22c45bf9..aa7d1d49 100644
+index 22c45bf9..630b51c0 100644
 --- a/Source/Frontend.cpp
 +++ b/Source/Frontend.cpp
 @@ -37,6 +37,100 @@
@@ -1131,7 +1131,19 @@ index 22c45bf9..aa7d1d49 100644
              pMenuPage = pMenuPageSaved;
          }
          else if (field_132_current_page_idx == MENUPAGE_PLAY)
-@@ -3229,10 +3417,26 @@ void Frontend::GetTgaIdxsForMenuScreen_4B6B00(u8 screen, u8* pTgaIdx, u8* pTgaId
+@@ -3104,6 +3292,11 @@ void Frontend::DrawBackground_4B6E10()
+     else
+     {
+         GetTgaIdxsForMenuScreen_4B6B00(field_EE08_menu_screen, &tga_idx, reinterpret_cast<u8*>(&ret));
++#if defined(GTA2_PORT)
++        // The index is written into the first byte of `ret` and read back below as its low byte: the same byte on x86,
++        // the opposite end on a big-endian CPU (N64: the right half of every two-part menu screen was never drawn).
++        ret = *reinterpret_cast<u8*>(&ret);
++#endif
+ 
+         // Left side
+         s32 blitRet = pgbh_BlitImage(tgaArray_61F0C8[tga_idx].field_84_img, 0, 0, 278, 480, 0, 0);
+@@ -3229,10 +3422,26 @@ void Frontend::GetTgaIdxsForMenuScreen_4B6B00(u8 screen, u8* pTgaIdx, u8* pTgaId
      }
  }
  
@@ -1158,7 +1170,7 @@ index 22c45bf9..aa7d1d49 100644
  
      FILE* hFile = crt::fopen(tgaArray_61F0C8[idx].field_0_tga_name, "rb");
      if (!hFile)
-@@ -3313,8 +3517,17 @@ Frontend::Frontend()
+@@ -3313,8 +3522,17 @@ Frontend::Frontend()
      field_C9D6_down_key_down = 0;
      field_C9D3_left_key_down = 0;
      field_C9D4_right_key_down = 0;
@@ -1176,7 +1188,7 @@ index 22c45bf9..aa7d1d49 100644
      field_C9D9_delete_key_down = 0;
      field_10C_bKeyboardAcquireFailed = false;
      field_108_winmain_next_state = Run_Frontend_2;
-@@ -3534,7 +3747,11 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
+@@ -3534,7 +3752,11 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
      wcsncpy(pPage->field_4_options_array[1].field_6_option_name_str,
              gText_0x14_704DFC->Find_5B5F90("options"),
              0x32u);
@@ -1188,7 +1200,7 @@ index 22c45bf9..aa7d1d49 100644
      pPage->field_4_options_array[2].field_0_option_type = ENTERABLE_1;
      pPage->field_4_options_array[2].field_2_x_pos = 300;
      pPage->field_4_options_array[2].field_4_y_pos = 290;
-@@ -4096,6 +4313,59 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
+@@ -4096,6 +4318,59 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
      pPage->field_B8A_option_states[0].field_2_unused = 348; //  TODO: check for wrong var
      pPage->field_BC6_current_option_idx = 0;
      pPage->field_BC8_default_option_idx = 0;
@@ -1248,7 +1260,7 @@ index 22c45bf9..aa7d1d49 100644
      field_EE0E_credits.LoadCredits_483F20();
  }
  
-@@ -5093,6 +5363,39 @@ void Frontend::LoadMapFilenamesFromSvg_4B4EC0()
+@@ -5093,6 +5368,39 @@ void Frontend::LoadMapFilenamesFromSvg_4B4EC0()
      }
  
      char_type path[256];

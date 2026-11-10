@@ -20,6 +20,7 @@
 #include "render/n64tex.h"
 extern "C" void gta2_n64_tex_forget(const N64Tex* t);
 extern "C" uint32_t gta2_n64_tex_capture(N64Tex* t, float a_scr, float a_tex, int additive);
+extern "C" uint32_t gta2_n64_tex_capture_xy(N64Tex* t, float kx, float ky, int additive);
 extern "C" int gta2_n64_tex_token_empty(uint32_t token);
 extern "C" void gta2_n64_hud_xform(float* x, float* y);
 extern "C" int gN64HudOn;
@@ -102,6 +103,15 @@ struct ImageEntry
     DWORD w, h;
     STexture* tex;
     u8* pixels; // a copy of the 16-bit image, to upload it again after a quick load
+#ifdef N64
+    // N64: `pixels` is the image as stored in the ROM (tools/img_n64.py: already at framebuffer size, RGBA5551), read in
+    // when the image is first drawn; w/h above stay the size the game lays it out in (640x480 space)
+    const u8* rom;  // pixel data in the cartridge (nullptr: not a ROM image)
+    u16 stw, sth;   // stored size
+    u32 bytes;      // of `pixels`, rounded up to 64
+    u32 lastUse;    // present count of the last blit
+    bool heap;      // `pixels` came from the heap, not from the shared region
+#endif
 };
 ImageEntry* gImages = nullptr;
 u32 gImageCount = 0;
@@ -521,6 +531,32 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
     }
     // N64: converte a textura agora (o motor reaproveita textura compartilhada, de dano e de digitos no mesmo quadro)
     u32 texId;
+    bool sized = false;
+    if (crisp2d && count == 4)
+    {
+        // HUD / menu art drawn upright: the copy is made for the exact size it covers, each axis on its own (see tex_slot)
+        float x0 = v[0].x, x1 = v[0].x, y0 = v[0].y, y1 = v[0].y, u0 = v[0].u, u1 = v[0].u, w0 = v[0].v, w1 = v[0].v;
+        for (int i = 1; i < 4; ++i)
+        {
+            x0 = v[i].x < x0 ? v[i].x : x0, x1 = v[i].x > x1 ? v[i].x : x1;
+            y0 = v[i].y < y0 ? v[i].y : y0, y1 = v[i].y > y1 ? v[i].y : y1;
+            u0 = v[i].u < u0 ? v[i].u : u0, u1 = v[i].u > u1 ? v[i].u : u1;
+            w0 = v[i].v < w0 ? v[i].v : w0, w1 = v[i].v > w1 ? v[i].v : w1;
+        }
+        // upright = every corner sits on a corner of the bounding box (a rotated quad falls back to the single scale)
+        bool upright = true;
+        for (int i = 0; i < 4; ++i)
+        {
+            upright = upright && (v[i].x == x0 || v[i].x == x1) && (v[i].y == y0 || v[i].y == y1);
+        }
+        if (upright && u1 - u0 >= 1.0f && w1 - w0 >= 1.0f && x1 > x0 && y1 > y0)
+        {
+            texId = gta2_n64_tex_capture_xy(reinterpret_cast<N64Tex*>(tex->field_1C_ptr), (x1 - x0) / (u1 - u0), (y1 - y0) / (w1 - w0),
+                                            blend == kBlendAdditive);
+            sized = true;
+        }
+    }
+    if (!sized)
     {
         const float ax = v[1].x - v[0].x, ay = v[1].y - v[0].y, bx = v[2].x - v[0].x, by = v[2].y - v[0].y;
         const float a_scr = fabsf(ax * by - bx * ay);
@@ -1005,7 +1041,7 @@ s32 CC gbh_FreeImageTable()
         if (gImages[i].loaded)
         {
             gbh_FreeTexture(gImages[i].tex);
-            if (!gta2_n64_big_owns(gImages[i].pixels))
+            if (gImages[i].pixels && !gta2_n64_big_owns(gImages[i].pixels))
             {
                 free(gImages[i].pixels);
             }
@@ -1018,10 +1054,17 @@ s32 CC gbh_FreeImageTable()
     return 0;
 }
 #ifdef N64
-// N64: as telas do menu (TGA 16 bits, ate 640x480) viram, na hora de carregar, uma copia na METADE da resolucao (media 2x2) em
-// RGBA5551, alinhada em 64 bytes, que o renderer desenha com o RDP (render_n64.c, comando kind 3). Meia resolucao porque a saida e
-// 320x240 (menu em 640x480). O TGA 16 bits e' guardado de baixo para cima e, na ROM, em big-endian (tools/le2be.py).
-// A copia so existe enquanto o menu esta aberto (gbh_FreeImageTable libera).
+// N64: menu screens. The build (tools/img_n64.py) turns each 640x480-space TGA into the picture the console shows: scaled
+// to the framebuffer (640x240: full width, half height) with a proper filter, RGBA5551, top-down, big-endian. Here it is
+// only read from the cartridge into RAM, the first time it is drawn: nothing is scaled at run time, and the 25 screens are
+// no longer all converted and kept in RAM when the front end opens (that took ~2.3 MB and several seconds).
+// Images live in the region shared with the map (gta2_n64_big_alloc); when it is full, the ones not drawn in the current
+// frame are dropped and the rest moved down.
+extern "C" uint32_t gta2_port_present_count();
+extern "C" const void* gta2_n64_map_file(const char* path, long offset);
+extern "C" void gta2_n64_rom_copy(void* dst, const void* src, unsigned len);
+
+// the half-size copy of an image handed over in memory (gbh_LoadImage; not used by the front end on the N64)
 static u8* ImageHalf16(const u8* src, int w, int h)
 {
     const int hw = (w + 1) / 2, hh = (h + 1) / 2;
@@ -1059,24 +1102,110 @@ static u8* ImageHalf16(const u8* src, int w, int h)
     data_cache_hit_writeback_invalidate(out, bytes);
     return reinterpret_cast<u8*>(out);
 }
-// usado por render_n64.c: copia reduzida da imagem 'idx' (largura/altura ja na metade), ou nullptr
-extern "C" const uint16_t* gta2_n64_image_get(int idx, int* w, int* h)
+
+// Makes room in the shared region: waits for the RDP (it may still be reading last frame's images), drops every image not
+// drawn in the current frame and moves the others down.
+static void ImagesEvict(u32 now)
+{
+    rspq_wait();
+    size_t off = 0;
+    for (;;)
+    {
+        ImageEntry* next = nullptr; // lowest address not handled yet
+        for (u32 i = 0; i < gImageCount; ++i)
+        {
+            ImageEntry& e = gImages[i];
+            if (e.loaded && e.pixels && e.rom && !e.heap && e.pixels >= gBig + off && (!next || e.pixels < next->pixels))
+            {
+                next = &e;
+            }
+        }
+        if (!next)
+        {
+            break;
+        }
+        if (next->lastUse != now)
+        {
+            next->pixels = nullptr; // read again from the cartridge if it is drawn later
+            continue;
+        }
+        if (next->pixels != gBig + off)
+        {
+            memmove(gBig + off, next->pixels, next->bytes);
+            data_cache_hit_writeback(gBig + off, next->bytes);
+            next->pixels = gBig + off;
+        }
+        off += next->bytes;
+    }
+    gBigUsed = off;
+    for (u32 i = 0; i < gImageCount; ++i)
+    {
+        ImageEntry& e = gImages[i];
+        if (e.loaded && e.pixels && e.rom && e.heap && e.lastUse != now)
+        {
+            free(e.pixels);
+            e.pixels = nullptr;
+            e.heap = false;
+        }
+    }
+}
+
+// true when image `idx` is in RAM (reading it from the cartridge if needed)
+static bool ImageResident(u32 idx)
+{
+    ImageEntry& e = gImages[idx];
+    const u32 now = gta2_port_present_count();
+    e.lastUse = now;
+    if (e.pixels)
+    {
+        return true;
+    }
+    if (!e.rom)
+    {
+        return false;
+    }
+    u8* out = static_cast<u8*>(gta2_n64_big_alloc(1, e.bytes));
+    if (!out)
+    {
+        ImagesEvict(now);
+        out = static_cast<u8*>(gta2_n64_big_alloc(1, e.bytes));
+    }
+    e.heap = false;
+    if (!out)
+    {
+        out = static_cast<u8*>(memalign(64, e.bytes));
+        e.heap = out != nullptr;
+    }
+    if (!out)
+    {
+        return false;
+    }
+    // One PI DMA straight into place. The file starts on an even cartridge address and the header is 16 bytes, so source
+    // and destination have the same parity (what dma_read needs); the CPU must hold no stale cache lines of the buffer.
+    data_cache_hit_writeback_invalidate(out, e.bytes);
+    dma_read(out, static_cast<unsigned long>(reinterpret_cast<uintptr_t>(e.rom) & 0x1FFFFFFFu), static_cast<unsigned long>(e.stw) * e.sth * 2u);
+    e.pixels = out;
+    return true;
+}
+
+// used by render_n64.c: the stored picture of image 'idx' (stw x sth) and the size the game lays it out in (lw x lh), or nullptr
+extern "C" const uint16_t* gta2_n64_image_get(int idx, int* stw, int* sth, int* lw, int* lh)
 {
     if (idx < 0 || static_cast<u32>(idx) >= gImageCount || !gImages[idx].loaded || !gImages[idx].pixels)
     {
         return nullptr;
     }
-    *w = static_cast<int>((gImages[idx].w + 1) / 2);
-    *h = static_cast<int>((gImages[idx].h + 1) / 2);
-    return reinterpret_cast<const uint16_t*>(gImages[idx].pixels);
+    const ImageEntry& e = gImages[idx];
+    *stw = e.stw;
+    *sth = e.sth;
+    *lw = static_cast<int>(e.w);
+    *lh = static_cast<int>(e.h);
+    return reinterpret_cast<const uint16_t*>(e.pixels);
 }
-#endif
-#ifdef N64
-extern "C" const void* gta2_n64_map_file(const char* path, long offset);
-extern "C" void gta2_n64_rom_copy(void* dst, const void* src, unsigned len);
-// N64: carrega uma tela do menu (TGA 16 bits na ROM, big-endian) DIRETO da ROM, sem o buffer de 600 KB do motor (fopen/malloc/fread/free):
-// le so duas linhas por vez (DMA do PI para um buffer fixo alinhado) e ja grava a copia reduzida na metade (ImageHalf16).
-// Devolve o indice na tabela de imagens (>= 0) ou < 0 em erro.
+
+// Registers a menu screen stored in the ROM (called by Frontend::Load_tga for all 25 when the front end opens): only its
+// 16-byte header is read. Returns the index in the image table (>= 0) or < 0 on error.
+// File: "N64I", then big-endian u16 layout width, layout height, stored width, stored height, 4 unused bytes, then pixels.
 extern "C" s32 gta2_n64_image_from_rom(const char* path)
 {
     const u8* rom = static_cast<const u8*>(gta2_n64_map_file(path, 0));
@@ -1084,14 +1213,13 @@ extern "C" s32 gta2_n64_image_from_rom(const char* path)
     {
         return -3;
     }
-    u8 hdr[24] __attribute__((aligned(8)));
-    gta2_n64_rom_copy(hdr, rom, 20);
-    const int idlen = hdr[0];
-    const int w = (hdr[12] << 8) | hdr[13];
-    const int h = (hdr[14] << 8) | hdr[15];
-    if (hdr[1] != 0 || hdr[2] != 2 || hdr[16] != 16 || w <= 0 || h <= 0 || w > 640 || h > 480)
+    u8 hdr[16] __attribute__((aligned(8)));
+    gta2_n64_rom_copy(hdr, rom, 16);
+    const int w = (hdr[4] << 8) | hdr[5], h = (hdr[6] << 8) | hdr[7];
+    const int stw = (hdr[8] << 8) | hdr[9], sth = (hdr[10] << 8) | hdr[11];
+    if (memcmp(hdr, "N64I", 4) != 0 || w <= 0 || h <= 0 || stw <= 0 || sth <= 0 || stw > 640 || sth > 480)
     {
-        return -2;
+        return -2; // not converted by tools/img_n64.py (stale build data?)
     }
     for (u32 i = 0; i < gImageCount; ++i)
     {
@@ -1099,52 +1227,16 @@ extern "C" s32 gta2_n64_image_from_rom(const char* path)
         {
             continue;
         }
-        const int hw = (w + 1) / 2, hh = (h + 1) / 2;
-        const size_t bytes = (static_cast<size_t>(hw) * hh * 2 + 63) & ~static_cast<size_t>(63);
-        u16* out = static_cast<u16*>(gta2_n64_big_alloc(1, bytes)); // shared region (see gta2_n64_big_alloc)
-        if (!out)
-        {
-            out = static_cast<u16*>(memalign(64, bytes));
-        }
-        if (!out)
-        {
-            return -4;
-        }
-        static u8 rowbuf[2 * 640 * 2 + 32] __attribute__((aligned(16)));
-        const uint32_t pix0 = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(rom) & 0x1FFFFFFFu) + 18u + static_cast<uint32_t>(idlen);
-        for (int y = 0; y < hh; ++y)
-        {
-            const int ya = h - 1 - 2 * y;          // TGA 16 bits: de baixo para cima
-            const int yb = ya > 0 ? ya - 1 : ya;
-            const uint32_t pi = pix0 + static_cast<uint32_t>(yb) * static_cast<uint32_t>(w) * 2u;
-            const unsigned len = static_cast<unsigned>(ya - yb + 1) * static_cast<unsigned>(w) * 2u;
-            u8* base = rowbuf + (pi & 7u);          // mesmo alinhamento (mod 8) da ROM, exigencia do dma_read
-            data_cache_hit_writeback_invalidate(base, len);
-            dma_read(base, pi, len);
-            const u8* rowA[2] = {base + static_cast<size_t>(w) * 2u * (ya - yb), base}; // [0] = linha ya, [1] = linha yb
-            for (int x = 0; x < hw; ++x)
-            {
-                const int xa = 2 * x;
-                const int xb = xa + 1 < w ? xa + 1 : xa;
-                unsigned r = 0, g = 0, b = 0;
-                for (int j = 0; j < 2; ++j)
-                {
-                    const u8* row = rowA[j];
-                    const int xs[2] = {xa, xb};
-                    for (int k = 0; k < 2; ++k)
-                    {
-                        const unsigned v = (static_cast<unsigned>(row[xs[k] * 2]) << 8) | row[xs[k] * 2 + 1];
-                        r += (v >> 10) & 31;
-                        g += (v >> 5) & 31;
-                        b += v & 31;
-                    }
-                }
-                out[static_cast<size_t>(y) * hw + x] = static_cast<u16>(((r >> 2) << 11) | ((g >> 2) << 6) | ((b >> 2) << 1) | 1);
-            }
-        }
-        data_cache_hit_writeback_invalidate(out, bytes);
-        STexture* t = NewTexture(w, h, nullptr);
-        gImages[i] = {TRUE, static_cast<DWORD>(w), static_cast<DWORD>(h), t, reinterpret_cast<u8*>(out)};
+        ImageEntry e = {};
+        e.loaded = TRUE;
+        e.w = static_cast<DWORD>(w);
+        e.h = static_cast<DWORD>(h);
+        e.tex = NewTexture(w, h, nullptr);
+        e.rom = rom + 16;
+        e.stw = static_cast<u16>(stw);
+        e.sth = static_cast<u16>(sth);
+        e.bytes = static_cast<u32>((static_cast<size_t>(stw) * sth * 2 + 63) & ~static_cast<size_t>(63));
+        gImages[i] = e;
         return static_cast<s32>(i);
     }
     return -1;
@@ -1178,6 +1270,11 @@ s32 CC gbh_LoadImage(SImage* img)
                 memcpy(copy, src, bytes);
             }
             gImages[i] = {TRUE, img->field_C_width, img->field_E_height, t, copy};
+#ifdef N64
+            gImages[i].stw = static_cast<u16>((img->field_C_width + 1) / 2);
+            gImages[i].sth = static_cast<u16>((img->field_E_height + 1) / 2);
+            gImages[i].heap = true;
+#endif
             return static_cast<s32>(i);
         }
     }
@@ -1190,7 +1287,7 @@ s32 CC gbh_BlitImage(s32 index, s32 left, s32 top, s32 right, s32 bottom, s32 x,
         return -1;
     }
 #ifdef N64
-    if (!gImages[index].pixels)
+    if (!ImageResident(static_cast<u32>(index)))
     {
         return -1;
     }
