@@ -6,7 +6,7 @@
 
 [🇺🇸 English](#english) · [🇧🇷 Português Brasileiro](#português-brasileiro)
 
-**Expansion Pak required / Expansion Pak obrigatório · ~54 MB ROM**
+**Expansion Pak required / Expansion Pak obrigatório · ~59 MB ROM**
 
 </div>
 
@@ -30,7 +30,7 @@ Personal / educational project. Not affiliated with or endorsed by Rockstar Game
 
 ## Project status and features
 
-This is a playable port of GTA 2 for Nintendo 64 that is still a **work in progress**. It preserves the PC version's game content, including the **Mad Island** bonus map absent from the PlayStation release. This fork has only been tested in ares, not on real N64 hardware. The full ROM is approximately **54 MB**.
+This is a playable port of GTA 2 for Nintendo 64 that is still a **work in progress**. It preserves the PC version's game content, including the **Mad Island** bonus map absent from the PlayStation release. This fork has only been tested in ares, not on real N64 hardware. The full ROM is approximately **59 MB**.
 
 The game includes **English, Spanish and Brazilian Portuguese**, with PT-BR integrated into the game's native GXT text system rather than drawn as a translation overlay. It also includes two selectable presentation modes:
 
@@ -87,6 +87,8 @@ The first build takes several minutes.
 * [libdragon](https://github.com/DragonMinded/libdragon) (preview branch) with its MIPS toolchain, installed at
   `/opt/libdragon` (or set `N64_INST=/path`). The build uses `audioconv64` and `mkdfs` from it.
 * `git`, `patch`, `make`, `python3` (standard library only).
+* Optional: `ffmpeg` and `ffprobe` on the PATH, to include the intro movie. On WSL the Windows `ffmpeg.exe` /
+  `ffprobe.exe` are enough. Without them the ROM is built without the intro.
 * **The GTA 2 game data** (GTA 2 was released as freeware by Rockstar): the game's `data` folder, placed at
   `../gta2_data/data` (next to this repository) or passed as `GAME_DATA=/path/to/data`.
 
@@ -94,6 +96,8 @@ The first build takes several minutes.
 
 `fstyle.sty`, `e.gxt`, `s.gxt`, the city maps (`bil`, `ste`, `wil`: `.gmp`, `.sty`, `.scr` and the mission folders), the bonus
 levels, `nyc.gci`, `test1.seq`, `attract/`, `keyboard/`, `frontend/` (menu screens), `audio/` (sound banks) and `gtaudio/` (radio WAVs).
+`movie/intro.bik` (the intro) is converted to H.264 at 320x240 with libdragon's `videoconv64` and played at power-on;
+A, B or Start skips it, and holding Z at boot skips it together with the menu.
 A missing file only prints a warning during the data step. `p.gxt` (Brazilian Portuguese text) is not part of the original game: if it is
 missing from the data folder, the data step generates it from `e.gxt` + `tools/pt_br.tsv` (`tools/make_pt_gxt.py`), so the language option
 (Options page) can switch between English, Spanish and Portuguese. The game font has no tilde glyphs, so `ã`/`õ` are drawn as `â`/`ô`.
@@ -116,6 +120,7 @@ Pass them to `build.sh` or `make -f Makefile.recomp`:
 |---|---|
 | `GAME_DATA=/path/to/data` | Where the GTA 2 `data` folder is (default `../gta2_data/data`) |
 | `MAPS="bil ste wil"` | Cities to include (fewer = smaller ROM) |
+| `INCLUDE_INTRO=0` | Leave out the intro movie (about 5 MB). `INTRO_QUALITY=75` sets its quality (0..100; higher = bigger) |
 | `INCLUDE_FRONTEND=0` | Leave out the menu screens (smaller ROM; hold Z at boot to jump straight into the map) |
 | `RADIO_RATE=12000` | Radio sample rate in Hz (`8000` = smaller) |
 | `N64_INST=/path` | libdragon install location |
@@ -131,7 +136,7 @@ Rendering/tuning knobs (pass as `EXTRA_CFLAGS="-DNAME=value ..."`):
 | `N64_LIGHT_GAIN=0.6` | Strength of coloured lights (1.0 = PC). Lower avoids blown-out red/neon tints |
 | `N64_AMBIENT_FLOOR=100` | Minimum ambient light (0-255) when lighting is on. `0` = as dark as the PC version |
 | `N64_CACHE_N=192` | Converted-texture cache slots (4 KB each). The measured peak is about 135 |
-| `N64_HEAP_RESERVE_KB=320` | RAM the renderer's speed caches must leave free for the engine (prevents "Out of memory" crashes) |
+| `N64_HEAP_RESERVE_KB=200` | RAM the renderer's speed caches must leave free for the engine (prevents "Out of memory" crashes) |
 
 `bash build.sh clean` removes the build output; `bash setup_engine.sh --force` redoes the engine checkout.
 
@@ -172,7 +177,8 @@ Use a separate `BUILD_DIR=...` for each set of flags (make does not notice chang
 * **DMA Design / Rockstar Games**: the original GTA 2.
 * **CriminalRETeam / `gta2_re`**: the decompilation this port runs on.
 * **M1sterMo / `gta2-browser`**: the browser port whose platform-abstraction approach and compatibility headers this work started from (MIT, see `THIRD_PARTY_NOTICES.md`).
-* **libdragon**: N64 SDK, RDP/RSP/audio libraries.
+* **libdragon**: N64 SDK, RDP/RSP/audio libraries, video decoder and converter.
+* **BigChat88 / `N64GTA2Port`**: another port from the same base, which showed that the intro movie can be converted at build time and played with libdragon's movie player.
 
 
 ---
@@ -187,7 +193,7 @@ A lógica do jogo é executada no console com um renderizador próprio para o RD
 
 ## Estado do projeto: em desenvolvimento
 
-Este é um port jogável, mas ainda **em desenvolvimento**. Este fork foi testado apenas no ares, não em um N64 real. A ROM tem aproximadamente **54 MB** e preserva o conteúdo da versão PC, incluindo as cidades e o mapa bônus **Mad Island**, ausente na versão PlayStation.
+Este é um port jogável, mas ainda **em desenvolvimento**. Este fork foi testado apenas no ares, não em um N64 real. A ROM tem aproximadamente **59 MB** e preserva o conteúdo da versão PC, incluindo as cidades e o mapa bônus **Mad Island**, ausente na versão PlayStation.
 
 ### Recursos e diferenças
 
@@ -243,6 +249,7 @@ Se `p.gxt` não existir nos dados originais, o processo de compilação o gera a
 |---|---|
 | `GAME_DATA=/caminho/data` | Pasta dos dados originais |
 | `MAPS="bil ste wil"` | Cidades incluídas |
+| `INCLUDE_INTRO=0` | Deixa o filme de abertura de fora (cerca de 5 MB). `INTRO_QUALITY=75` define a qualidade (0..100; maior = arquivo maior) |
 | `INCLUDE_FRONTEND=0` | Remove telas do menu para reduzir a ROM |
 | `RADIO_RATE=12000` | Taxa de amostragem das rádios (Hz) |
 | `N64_INST=/caminho` | Instalação da libdragon |
@@ -257,7 +264,7 @@ Ajustes do renderizador podem ser informados por `EXTRA_CFLAGS="-DNOME=valor ...
 | `N64_LIGHT_GAIN=0.6` | Intensidade das luzes coloridas |
 | `N64_AMBIENT_FLOOR=100` | Iluminação ambiente mínima |
 | `N64_CACHE_N=192` | Slots do cache de texturas convertidas |
-| `N64_HEAP_RESERVE_KB=320` | Memória reservada para o motor |
+| `N64_HEAP_RESERVE_KB=200` | Memória reservada para o motor |
 
 Use `bash build.sh clean` para limpar a compilação e `bash setup_engine.sh --force` para refazer o checkout do motor.
 

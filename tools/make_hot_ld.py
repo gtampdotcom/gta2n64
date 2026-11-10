@@ -14,18 +14,30 @@ If the anchor line is not found (a different libdragon), the script is copied un
 """
 import sys
 
+import os
+
 src, order, dst = sys.argv[1], sys.argv[2], sys.argv[3]
 names = []
-for line in open(order, encoding='utf-8'):
-    line = line.split('#')[0].strip()
-    if line and line not in names:
-        names.append(line)
+if order and os.path.exists(order):
+    for line in open(order, encoding='utf-8'):
+        line = line.split('#')[0].strip()
+        if line and line not in names:
+            names.append(line)
+# Code that only the intro movie uses (port/n64/intro_n64.c): libdragon's H.264 decoder and movie player, ~80 KB. It is
+# linked as one block between two symbols; once the movie has played, main_n64.c gives that memory to the game's buffers
+# (gta2_n64_reclaim_alloc). Only objects that nothing else in the game calls may be listed here.
+INTRO_ONLY = ('*libdragon.a:h264_decoder.o', '*libdragon.a:h264.o', '*libdragon.a:yuv.o', '*libdragon.a:fmv.o',
+              '*libdragon.a:subtitles.o', '*libdragon.a:video.o', '*libdragon.a:video_sync.o', '*intro_n64.o')
 text = open(src, encoding='utf-8').read()
 anchor = '        *(.text)\n'
-if text.count(anchor) == 1 and names:
+if text.count(anchor) == 1:
+    intro = ('        /* intro-only code, reclaimed as data after the movie (tools/make_hot_ld.py) */\n'
+             '        . = ALIGN(64);\n        __n64_intro_text_start = .;\n'
+             + ''.join('        %s(.text .text.*)\n' % o for o in INTRO_ONLY)
+             + '        . = ALIGN(64);\n        __n64_intro_text_end = .;\n')
     hot = ''.join('        *(%s)\n' % n for n in names)
-    text = text.replace(anchor, '        /* hot functions first, contiguous (tools/make_hot_ld.py) */\n' + hot + anchor)
+    text = text.replace(anchor, intro + '        /* hot functions first, contiguous (tools/make_hot_ld.py) */\n' + hot + anchor)
     print('    [HOTLD] %s: %d hot sections' % (dst, len(names)))
 else:
-    print('    [HOTLD] anchor not found or empty list: using the stock linker script')
+    print('    [HOTLD] anchor not found: using the stock linker script')
 open(dst, 'w', encoding='utf-8').write(text)

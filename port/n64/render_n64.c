@@ -54,7 +54,7 @@ static uint32_t g_frames;
 /* RESERVA para o motor: os blocos de upload/texto sao so cache de velocidade e nao podem comer a folga que o jogo precisa para alocar
  * em tempo de execucao (texturas sob demanda, scripts, sons): sem isso o heap enchia aos poucos e o motor abortava com 'Out of memory'. */
 #ifndef N64_HEAP_RESERVE_KB
-#define N64_HEAP_RESERVE_KB 320
+#define N64_HEAP_RESERVE_KB 200 /* was 320 while every texture slot could also hold a recorded upload block; only the few text blocks are left */
 #endif
 extern char *__heap_top;
 static int heap_has_room(void)

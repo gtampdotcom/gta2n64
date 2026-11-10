@@ -138,7 +138,7 @@ struct TxtEntry
     TxtCmd cmds[kTxtMaxCmds];
 };
 
-FrameVertex gTxtPool[kTxtMaxVerts];
+FrameVertex* gTxtPool = nullptr; // kTxtMaxVerts vertices, set up by gta2_frame_prealloc (no pool: text is not cached)
 TxtEntry gTxtEnt[kTxtEntries];
 uint32_t gTxtPoolUsed = 0;
 bool gTxtActive = false;
@@ -176,8 +176,26 @@ extern "C" {
 
 // N64: the draw lists live for the whole game; reserved at boot (main_n64.c), before any level memory, so they do not
 // split the heap between level loads
+// main_n64.c: memory left behind by the intro movie's code (NULL when there is none left); never freed
+extern "C" void* gta2_n64_reclaim_alloc(size_t n);
+
 void gta2_frame_prealloc()
 {
+    // the command list and the text cache go into the intro movie's old code when it fits (they live for the whole game)
+    if (!gCmds.p)
+    {
+        const size_t bytes = 48 * 1024; // same size as ensureRoom gives it
+        if (void* m = gta2_n64_reclaim_alloc(bytes))
+        {
+            gCmds.p = static_cast<FrameCommand*>(m);
+            gCmds.cap = bytes / sizeof(FrameCommand);
+        }
+    }
+    if (!gTxtPool)
+    {
+        void* m = gta2_n64_reclaim_alloc(sizeof(FrameVertex) * kTxtMaxVerts);
+        gTxtPool = static_cast<FrameVertex*>(m ? m : malloc(sizeof(FrameVertex) * kTxtMaxVerts));
+    }
     ensureRoom(gVerts, 1);
     ensureRoom(gCmds, 1);
 }
@@ -366,6 +384,10 @@ void gta2_text_end()
     }
     gTxtActive = false;
     gForceNewCmd = false;
+    if (!gTxtPool)
+    {
+        return;
+    }
 
     const size_t c0 = gCmds.size() >= gTxtCmd0 ? gTxtCmd0 : gCmds.size();
     const size_t v0 = gTxtVert0;

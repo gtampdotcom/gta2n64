@@ -274,6 +274,30 @@ static void poll_input(void)
 }
 
 int gta2_n64_gfx_active(void);
+/* ---- memory of the intro movie's code, reused after the movie ----
+ * The linker script (tools/make_hot_ld.py) puts everything only the intro uses (libdragon's H.264 decoder and movie
+ * player, ~80 KB) between these two symbols. The movie plays once, at power-on; after that the block is plain RAM and is
+ * handed out here to buffers that live for the whole game (frame_n64.cpp), instead of them coming out of the heap: with
+ * the decoder resident, the game had 130 KB less. Never free() what this returns. */
+extern char __n64_intro_text_start[] __attribute__((weak)), __n64_intro_text_end[] __attribute__((weak));
+static char *g_reclaim, *g_reclaim_end;
+static void reclaim_init(void)
+{
+    char *const a = (char *)__n64_intro_text_start, *const b = (char *)__n64_intro_text_end;
+    if (!a || (uintptr_t)b <= (uintptr_t)a) return;
+    g_reclaim = a;
+    g_reclaim_end = b;
+    inst_cache_hit_invalidate(g_reclaim, g_reclaim_end - g_reclaim); /* it is data from now on */
+}
+void *gta2_n64_reclaim_alloc(size_t n)
+{
+    n = (n + 63u) & ~(size_t)63u;
+    if (!g_reclaim || (size_t)(g_reclaim_end - g_reclaim) < n) return NULL;
+    void *p = g_reclaim;
+    g_reclaim += n;
+    return p;
+}
+
 /* Escolha de inicio, lida por game_entry.cpp: -1 = menu original do GTA 2; 0 = bil (Industrial), 1 = ste (Residential), 2 = wil (Downtown)
  * direto no mapa (sem menu). Segurar Z ao ligar pula o menu: Z = bil, Z + C-baixo = ste, Z + C-esquerda = wil. */
 #ifndef N64_BOOT_MAP
@@ -364,6 +388,17 @@ int main(void)
     console_render();
 
     read_boot_choice();
+#if !defined(N64_NO_INTRO) && (!defined(N64_PROF) || defined(N64_INTRO_TEST))
+    {   /* the intro movie (intro_n64.c), unless the menu is being skipped (Z held). Afterwards the display goes back to
+           the mode console_init() left it in, which is the one the game is drawn in (640x240) */
+        extern int gta2_n64_play_intro(int crt_margin);
+        if (gta2_n64_boot_map < 0 && gta2_n64_play_intro(N64_OVERSCAN_X > 0 || N64_OVERSCAN_Y > 0)) {
+            display_init(RESOLUTION_640x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
+            vi_set_borders((vi_borders_t){ N64_OVERSCAN_X, N64_OVERSCAN_X, N64_OVERSCAN_Y, N64_OVERSCAN_Y });
+        }
+    }
+#endif
+    reclaim_init(); /* the movie (if any) is over: its code becomes buffer space */
     console_render();
 
     { /* whole-game buffers first, at the bottom of the heap (see gta2_n64_render_prealloc) */

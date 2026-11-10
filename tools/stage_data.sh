@@ -48,11 +48,48 @@ for e in "$@"; do
     mkdir -p "$out/data/$(dirname "$low")"
     case "$low" in
       old\ *|*/old\ *|.ds_store|*/.ds_store|audio/*.raw|audio/*.sdt) ;;
+      movie/intro.bik) ;;   # converted below; its outputs are listed there
       gtaudio/*.wav|audio/vocals/*.wav) echo "$out/data/${low%.wav}.wav64" >> "$keep_list" ;;
       *) echo "$out/data/$low" >> "$keep_list" ;;
     esac
     case "$low" in
       old\ *|*/old\ *|.ds_store|*/.ds_store) continue ;;
+      movie/intro.bik)
+        # intro movie: Bink -> H.264 320x240 + audio, with libdragon's videoconv64 (needs ffmpeg). Played by intro_n64.c.
+        vdst="$out/data/intro.h264"; adst="$out/data/intro.wav64"; vcfg="h264-q${INTRO_QUALITY:-75}-320-a22050"
+        vstamp="${out%/}.intro_cfg"
+        if [ ! -f "$vdst" ] || [ ! -f "$adst" ] || [ "$f" -nt "$vdst" ] || [ "$(cat "$vstamp" 2>/dev/null)" != "$vcfg" ]; then
+          ffdir=""; ffm=""
+          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+            ffm="$(command -v ffmpeg)"; ffp="$(command -v ffprobe)"
+          elif command -v ffmpeg.exe >/dev/null 2>&1 && command -v ffprobe.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
+            # WSL with only the Windows ffmpeg: small wrappers that hand it Windows paths (tools/ffwin.sh)
+            ffdir="$(mktemp -d)"
+            for t in ffmpeg ffprobe; do
+              { echo '#!/usr/bin/env bash'; echo "FFWIN_EXE=\"$(command -v $t.exe)\" exec bash \"$here/ffwin.sh\" \"\$@\""; } > "$ffdir/$t"
+              chmod +x "$ffdir/$t"
+            done
+            ffm="$ffdir/ffmpeg"; ffp="$ffdir/ffprobe"
+          fi
+          if [ -z "$ffm" ]; then
+            echo "AVISO: ffmpeg nao encontrado: a ROM fica sem o filme de abertura (instale o ffmpeg ou use INCLUDE_INTRO=0)"
+          else
+            echo "    [INTRO] $low (H.264 320x240, quality ${INTRO_QUALITY:-75})"
+            vtmp="$(mktemp -d)"; cp "$f" "$vtmp/intro.bik"
+            if N64_INST="${N64_INST:-/opt/libdragon}" "${N64_INST:-/opt/libdragon}/bin/videoconv64" -o "$vtmp" --codec h264 --width 320 \
+                 --quality "${INTRO_QUALITY:-75}" --no-progress --audio-parms 22050,1 --audio-compress 1 \
+                 --ffmpeg-path "$ffm" --ffprobe-path "$ffp" "$vtmp/intro.bik" >/dev/null 2>"$vtmp/log" \
+               && [ -s "$vtmp/intro.h264" ] && [ -s "$vtmp/intro.wav64" ]; then
+              cp "$vtmp/intro.h264" "$vdst" && cp "$vtmp/intro.wav64" "$adst" && echo "$vcfg" > "$vstamp"
+            else
+              echo "AVISO: a conversao do filme de abertura falhou (a ROM fica sem ele):"; tail -3 "$vtmp/log"
+              rm -f "$vdst" "$adst"
+            fi
+            rm -rf "$vtmp"
+          fi
+          [ -n "$ffdir" ] && rm -rf "$ffdir"
+        fi
+        [ -f "$vdst" ] && [ -f "$adst" ] && { echo "$vdst" >> "$keep_list"; echo "$adst" >> "$keep_list"; } ;;
       *.tga)
         # menu screens: resampled here to the size they cover on the N64 framebuffer (tools/img_n64.py), not at run time.
         # Redone only when the source, the converter or the target size changed.
