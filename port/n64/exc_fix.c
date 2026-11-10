@@ -10,6 +10,7 @@
 
 static exception_handler_t gOld;
 static uint32_t gFailed; /* tentativas de correcao que falharam */
+uint32_t gta2_n64_excfix_n[2]; /* emulated so far: [0] unaligned accesses, [1] float->int out of range (each one costs a full exception) */
 
 static uint64_t rd_be(uint32_t a, int n)
 {
@@ -38,6 +39,7 @@ static int fix_insn(const exception_t *ex, reg_block_t *r, uint32_t insn, uint32
 
     if (ex->code == 4 || ex->code == 5) // AdEL / AdES
     {
+        ++gta2_n64_excfix_n[0];
         const uint32_t addr = (uint32_t)r->gpr[rs] + (uint32_t)(int32_t)(int16_t)insn;
         if (addr == pc)
         {
@@ -78,6 +80,7 @@ static int fix_insn(const exception_t *ex, reg_block_t *r, uint32_t insn, uint32
                 memcpy(dst, &v, 8);
             }
             r->fc31 &= ~0x0003F000u; // limpa os bits de causa
+            ++gta2_n64_excfix_n[1];
             return 1;
         }
     }

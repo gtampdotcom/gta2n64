@@ -14,6 +14,129 @@ void gta2_port_flush_key_events(int with_latched);
 int gta2_game_in_menu(void);
 void gta2_install_exception_fixups(void);
 
+#include "prof_n64.h"
+#ifdef N64_PROF
+/* ---- frame profiler (see prof_n64.h) ---- */
+#ifndef N64_BENCH_F0
+#define N64_BENCH_F0 300 /* the bench window, in presented frames: the same frames (same game ticks) in every build */
+#endif
+#ifndef N64_BENCH_F1
+#define N64_BENCH_F1 1100
+#endif
+#define PROF_REPORT 60
+static const char *const kPfName[PF_N] = { "logic", "draw", "present", "texconv", "wait", "audio", "hash", "x2", "x3", "x4" };
+static const char *const kPcName[PC_N] = { "ticks", "cmds", "verts", "tris", "rects", "uploads", "conv", "areaKpx", "unaligned", "fpconv" };
+static uint32_t pf_acc[PF_N], pf_tot[PF_N], pc_acc[PC_N], pc_tot[PC_N];
+static uint8_t pf_stk[16];
+static int pf_sp;
+static uint32_t pf_last, pf_t_first, pf_t_rep, pf_t_b0, pf_frames, pf_bframes, pf_max, pf_nframe;
+uint32_t gta2_n64_prof_hash = 2166136261u; /* running checksum of everything drawn (render_n64.c) */
+uint32_t gta2_n64_prof_fbhash = 2166136261u; /* running checksum of sampled framebuffers */
+static uint32_t pf_hash0, pf_fbhash0;
+static int pf_state; /* 0 = before the window, 1 = inside, 2 = done */
+void gta2_n64_prof_enter(int id)
+{
+    const uint32_t now = TICKS_READ();
+    if (pf_sp > 0) pf_acc[pf_stk[pf_sp - 1]] += now - pf_last;
+    if (pf_sp < 16) pf_stk[pf_sp] = (uint8_t)id;
+    ++pf_sp;
+    pf_last = now;
+}
+void gta2_n64_prof_leave(void)
+{
+    const uint32_t now = TICKS_READ();
+    if (pf_sp <= 0) return;
+    --pf_sp;
+    if (pf_sp < 16) pf_acc[pf_stk[pf_sp]] += now - pf_last;
+    pf_last = now;
+}
+void gta2_n64_prof_count(int id, unsigned n) { pc_acc[id] += n; }
+/* Sampling profiler: a ~2 kHz timer interrupt records where the CPU was (EPC), as a histogram over the code in 32-byte buckets
+ * (functions are aligned to 32). Only samples inside the bench window count. Dumped at the end as "[smp] addr:count ..." lines;
+ * the host turns them into a per-function table with the ELF's symbols (tools/prof_symbols.py). */
+#ifdef N64_PROF_SAMPLE
+extern char __text_start[], __text_end[];
+#define SMP_SHIFT 5
+#define SMP_MAX (0x1E0000 >> SMP_SHIFT)
+static uint16_t smp_hist[SMP_MAX];
+static uint32_t smp_total, smp_out, smp_sec[PF_N + 1];
+static void smp_cb(int ovfl)
+{
+    (void)ovfl;
+    if (pf_state != 1) return;
+    const uint32_t i = ((uint32_t)C0_EPC() - (uint32_t)(uintptr_t)__text_start) >> SMP_SHIFT;
+    if (i < SMP_MAX) { if (smp_hist[i] != 0xFFFF) ++smp_hist[i]; } else ++smp_out;
+    ++smp_total;
+    ++smp_sec[pf_sp > 0 && pf_sp <= 16 ? pf_stk[pf_sp - 1] : PF_N];
+}
+static void smp_dump(void)
+{
+    char b[256];
+    int n = 0;
+    n = snprintf(b, sizeof(b), "[smpinfo] total=%u outside=%u text=%p", (unsigned)smp_total, (unsigned)smp_out, (void *)__text_start);
+    for (int i = 0; i <= PF_N; ++i) if (smp_sec[i]) n += snprintf(b + n, sizeof(b) - n, " %s=%u", i < PF_N ? kPfName[i] : "none", (unsigned)smp_sec[i]);
+    debugf("%s\n", b);
+    n = 0;
+    for (uint32_t i = 0; i < SMP_MAX; ++i) {
+        if (!smp_hist[i]) continue;
+        n += snprintf(b + n, sizeof(b) - n, " %x:%u", (unsigned)((uint32_t)(uintptr_t)__text_start + (i << SMP_SHIFT)), (unsigned)smp_hist[i]);
+        if (n > 220) { debugf("[smp]%s\n", b); n = 0; }
+    }
+    if (n) debugf("[smp]%s\n", b);
+}
+#endif
+static void pf_line(const char *tag, const uint32_t *t, const uint32_t *c, uint32_t wall, uint32_t frames, uint32_t maxf)
+{
+    char b[512];
+    int n = 0;
+    uint32_t sum = 0;
+    wall -= t[PF_HASH]; /* the checksum is measuring overhead, not part of the game */
+    const double k = 1000.0 / (double)TICKS_PER_SECOND / (double)frames;
+    n += snprintf(b + n, sizeof(b) - n, "[%s] frames=%u wall_ms=%.0f ms/frame=%.2f fps=%.2f max=%.1f |", tag, (unsigned)frames,
+                  (double)wall * 1000.0 / (double)TICKS_PER_SECOND, (double)wall * k, (double)frames * (double)TICKS_PER_SECOND / (double)wall,
+                  (double)maxf * 1000.0 / (double)TICKS_PER_SECOND);
+    for (int i = 0; i < PF_N; ++i) { if (i == PF_HASH) continue; sum += t[i]; if (t[i]) n += snprintf(b + n, sizeof(b) - n, " %s=%.2f", kPfName[i], (double)t[i] * k); }
+    n += snprintf(b + n, sizeof(b) - n, " other=%.2f |", (double)(int32_t)(wall - sum) * k);
+    for (int i = 0; i < PC_N; ++i) if (c[i]) n += snprintf(b + n, sizeof(b) - n, " %s=%.1f", kPcName[i], (double)c[i] / (double)frames);
+    debugf("%s\n", b);
+}
+void gta2_n64_prof_frame(void)
+{
+    static uint32_t prev;
+    const uint32_t now = TICKS_READ();
+    { extern uint32_t gta2_n64_excfix_n[2]; static uint32_t e0, e1; pc_acc[PC_X1] += gta2_n64_excfix_n[0] - e0; pc_acc[PC_X2] += gta2_n64_excfix_n[1] - e1; e0 = gta2_n64_excfix_n[0]; e1 = gta2_n64_excfix_n[1]; }
+#ifdef N64_PROF_SAMPLE
+    if (!pf_t_first) new_timer(TICKS_PER_SECOND / 1987, TF_CONTINUOUS, smp_cb);
+#endif
+    if (!pf_t_first) { pf_t_first = pf_t_rep = prev = now | 1u; memset(pf_acc, 0, sizeof(pf_acc)); memset(pc_acc, 0, sizeof(pc_acc)); return; }
+    const uint32_t ft = now - prev;
+    prev = now;
+    ++pf_frames;
+    ++pf_nframe;
+    if (pf_state == 0 && pf_nframe >= N64_BENCH_F0) { pf_hash0 = gta2_n64_prof_hash; pf_fbhash0 = gta2_n64_prof_fbhash; pf_state = 1; pf_t_b0 = now; pf_bframes = 0; pf_max = 0; memset(pf_tot, 0, sizeof(pf_tot)); memset(pc_tot, 0, sizeof(pc_tot)); memset(pf_acc, 0, sizeof(pf_acc)); memset(pc_acc, 0, sizeof(pc_acc)); pf_frames = 0; pf_t_rep = now; return; }
+    if (pf_state == 1) { ++pf_bframes; if (ft > pf_max) pf_max = ft; }
+    if (pf_frames >= PROF_REPORT || (pf_state == 1 && pf_nframe >= N64_BENCH_F1)) {
+        pf_line("prof", pf_acc, pc_acc, now - pf_t_rep, pf_frames, 0);
+        if (pf_state == 1) { for (int i = 0; i < PF_N; ++i) pf_tot[i] += pf_acc[i]; for (int i = 0; i < PC_N; ++i) pc_tot[i] += pc_acc[i]; }
+        memset(pf_acc, 0, sizeof(pf_acc)); memset(pc_acc, 0, sizeof(pc_acc));
+        pf_frames = 0; pf_t_rep = now;
+        if (pf_state == 1 && pf_nframe >= N64_BENCH_F1) {
+            struct mallinfo mi = mallinfo();
+            extern char *__heap_top;
+            pf_line("bench", pf_tot, pc_tot, now - pf_t_b0, pf_bframes, pf_max);
+            debugf("[benchsum] cmds=%u verts=%u tris=%u rects=%u uploads=%u conv=%u ticks=%u hash=%08x (from %08x) fbhash=%08x (from %08x)\n", (unsigned)pc_tot[PC_CMDS], (unsigned)pc_tot[PC_VERTS], (unsigned)pc_tot[PC_TRIS],
+                   (unsigned)pc_tot[PC_RECTS], (unsigned)pc_tot[PC_UPLOADS], (unsigned)pc_tot[PC_CONV], (unsigned)pc_tot[PC_LOGIC], (unsigned)gta2_n64_prof_hash, (unsigned)pf_hash0, (unsigned)gta2_n64_prof_fbhash, (unsigned)pf_fbhash0);
+            debugf("[benchmem] heap_used=%dKB heap_free_in_arena=%dKB arena=%dKB unclaimed=%ldKB\n", mi.uordblks / 1024, mi.fordblks / 1024, mi.arena / 1024, (long)(__heap_top - (char *)sbrk(0)) / 1024);
+#ifdef N64_PROF_SAMPLE
+            smp_dump();
+#endif
+            debugf("[benchdone]\n");
+            pf_state = 2;
+        }
+    }
+}
+#endif
+
 // Relogio monotonico em ms para o motor (timeGetTime, QueryPerformanceCounter...).
 double gta2_n64_now_ms(void)
 {
@@ -66,6 +189,15 @@ static void poll_input(void)
 {
     joypad_poll();
     joypad_inputs_t in = joypad_get_inputs(JOYPAD_PORT_1);
+#ifdef N64_BENCH
+    {   /* scripted pad for repeatable measurements: walk forward all the time, turn left 1 s in every 5 */
+        extern uint32_t gta2_n64_frames(void);
+        const uint32_t bf = gta2_n64_frames(); /* frame-indexed, so every build plays the same game */
+        memset(&in, 0, sizeof(in));
+        in.btn.d_up = bf >= 60u;
+        in.btn.d_left = bf >= 60u && ((bf / 20u) % 5u) == 0u;
+    }
+#endif
     /* Controle estilo PS1 (manual do GTA 2 no PS1). No JOGO:
      *   direcional/analogico = mover/virar   A = acelera (X)   B = re (Quadrado)   C-cima = entra/sai do carro (Triangulo)
      *   C-direita = especial (Circulo)   R = freia/pula (R1)   Z = ataca (R2)   L = proxima arma (L1)   C-esquerda = arma anterior (L2)
@@ -82,7 +214,11 @@ static void poll_input(void)
     start_prev = in.btn.start;
     /* BLINDAGEM DA ENTRADA NA PARTIDA: ao entrar no jogo (ou ligar direto no mapa) todas as teclas do jogo ficam desligadas ate o
      * controle ficar 100% neutro (sem botao, analogico perto do centro) por 6 leituras seguidas e passarem 0,8 s; no maximo 5 s. */
+#ifdef N64_BENCH
+    const uint32_t now_ms = 0; /* no input blanking in bench builds: it is timed in real ms */
+#else
     const uint32_t now_ms = (uint32_t)get_ticks_ms();
+#endif
     static int bp_menu = -1, neutral_n;
     static uint32_t blank_t0;
     const int pad_neutral = !(in.btn.a || in.btn.b || in.btn.z || in.btn.start || in.btn.l || in.btn.r || in.btn.c_up || in.btn.c_down ||

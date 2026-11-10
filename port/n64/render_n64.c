@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "render/n64tex.h"
+#include "prof_n64.h"
 #include <rdpq_tex.h>
 #include <rdpq_text.h>
 #include <rdpq_font.h>
@@ -246,6 +247,7 @@ static int tex_slot(N64Tex *t, float scale, int additive)
         if (!g_cbuf) return -1;
         memset(g_c, 0, sizeof(g_c));
     }
+    PROF_ENTER(PF_TEXCONV); PROF_COUNT(PC_CONV, 1);
     const int w = t->w, h = t->h;
     int tw = w, th = h;
     if (scale < 0.95f) { /* reduz para o tamanho na tela (sprites: ~metade; blocos: ~44 de 64) */
@@ -278,7 +280,7 @@ static int tex_slot(N64Tex *t, float scale, int additive)
             const int s = (g_next + i) % CACHE_N;
             if (g_c[s].used != g_frames + 1) { slot = s; break; }
         }
-        if (slot < 0) { return -1; } /* cache cheio so com texturas deste quadro: desenha sem textura */
+        if (slot < 0) { PROF_LEAVE(); return -1; } /* cache cheio so com texturas deste quadro: desenha sem textura */
 
         rspq_wait();
     }
@@ -395,6 +397,7 @@ conv_done_loop:
     g_c[slot].empty = (uint8_t)!any_opaque;
     g_c[slot].add = (uint8_t)additive;
     t->slot = (int16_t)slot;
+    PROF_LEAVE();
     return slot;
 }
 
@@ -509,6 +512,9 @@ uint32_t gta2_n64_frames(void) { return g_frames; }
 
 static inline double ticks_ms(uint64_t t) { return (double)t * 1000.0 / (double)TICKS_PER_SECOND; }
 
+#ifdef N64_PROF
+static float g_prof_area; /* framebuffer pixels covered by everything drawn this frame (overdraw measure) */
+#endif
 static int s_persp = -1; /* perspectiva do RDP no momento (-1 = desconhecida): ligada so nos triangulos que precisam; retangulo de textura exige desligada */
 
 /* 6 vertices consecutivos (2 triangulos) que formam um retangulo alinhado aos eixos, sem rotacao nem perspectiva e com a
@@ -558,6 +564,10 @@ static int try_texrect(const FVert *p, float sx, float sy, float ts, float tt)
     if (x1 - x0 < 0.25f || y1 - y0 < 0.25f) { return 1; }
     if (s_persp != 0) { rdpq_mode_persp(0); s_persp = 0; } /* retangulo + perspectiva ligada saia chapado */
     rdpq_texture_rectangle_scaled(TILE0, x0, y0, x1, y1, s0, t0, s1, t1);
+    PROF_COUNT(PC_RECTS, 1);
+#ifdef N64_PROF
+    g_prof_area += (x1 - x0) * (y1 - y0);
+#endif
 
     return 1;
 }
@@ -684,6 +694,7 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
 #endif
             rdpq_tex_upload(TILE0, &surf, NULL);
             s_up_slot = slot; s_up_ver = g_slot_ver[slot];
+            PROF_COUNT(PC_UPLOADS, 1);
 
         }
     } else if (g_dbg == 3) { /* cor chapada pelo ponteiro da textura */
@@ -743,6 +754,10 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         }
 
         
+        PROF_COUNT(PC_TRIS, 1);
+#ifdef N64_PROF
+        g_prof_area += 0.5f * fabsf((v[1][0] - v[0][0]) * (v[2][1] - v[0][1]) - (v[2][0] - v[0][0]) * (v[1][1] - v[0][1]));
+#endif
         if (is_tex == 2)  { rdpq_triangle(&kFmtTexOnly, v[0], v[1], v[2]); }
         else if (is_tex)  rdpq_triangle(&kFmtTex, v[0], v[1], v[2]);
         else              rdpq_triangle(&TRIFMT_SHADE, v[0], v[1], v[2]);
@@ -851,14 +866,31 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
         inited = 1;
         g_active = 1;
     }
+    PROF_ENTER(PF_PRESENT);
+    PROF_COUNT(PC_CMDS, cmdCount); PROF_COUNT(PC_VERTS, vertCount);
+#ifdef N64_PROF
+    {   /* checksum of the frame's draw lists as the engine produced them (positions, uvs, colours, command kinds and sizes) */
+        extern uint32_t gta2_n64_prof_hash;
+        PROF_ENTER(PF_HASH);
+        uint32_t h = gta2_n64_prof_hash;
+        const uint32_t *w = (const uint32_t *)verts_;
+        for (int i = 0; i < vertCount * 6; ++i) h = (h ^ w[i]) * 16777619u;
+        const FCmd *hc = (const FCmd *)cmds_;
+        for (int i = 0; i < cmdCount; ++i) h = (h ^ (hc[i].kind | ((hc[i].blend & 0x1FFu) << 4) | (hc[i].count << 16))) * 16777619u;
+        gta2_n64_prof_hash = h;
+        PROF_LEAVE();
+    }
+#endif
     ublk_reap();
 
     const FCmd *cmds = (const FCmd *)cmds_;
     const FVert *verts = (const FVert *)verts_;
     if (refWidth <= 0) refWidth = 640;
 
-    gta2_n64_audio_poll();
+    PROF_ENTER(PF_AUDIO); gta2_n64_audio_poll(); PROF_LEAVE();
+    PROF_ENTER(PF_WAIT);
     surface_t *disp = display_get();
+    PROF_LEAVE();
     SCR_W = (float)disp->width;
     SCR_H = (float)disp->height;
     const int IW = (int)disp->width, IH = (int)disp->height;
@@ -882,14 +914,58 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
         ++c;
     }
 
+#ifdef N64_PROF
+    {   /* every 32nd frame: wait for the RDP and checksum the finished framebuffer (pixel-exact check of the renderer itself) */
+        extern uint32_t gta2_n64_prof_fbhash;
+        if ((g_frames & 31u) == 0u
+#ifdef N64_PROF_DUMP
+            || g_frames == (N64_PROF_DUMP)
+#endif
+        ) {
+            PROF_ENTER(PF_HASH);
+            rdpq_detach_wait();
+            const uint16_t *fb = (const uint16_t *)disp->buffer;
+            uint32_t h = gta2_n64_prof_fbhash;
+            for (int y = 0; y < IH; ++y) {
+                const uint16_t *row = (const uint16_t *)((const uint8_t *)fb + (size_t)y * disp->stride);
+                for (int x = 0; x < IW; ++x) h = (h ^ row[x]) * 16777619u;
+            }
+            gta2_n64_prof_fbhash = h;
+#ifdef N64_PROF_DUMP
+            if (g_frames == (N64_PROF_DUMP)) { /* the whole frame as hex text, turned into a PNG on the host */
+                static const char hx[] = "0123456789abcdef";
+                char line[64 * 4 + 1];
+                debugf("[fbinfo] %d %d\n", IW, IH);
+                for (int y = 0; y < IH; ++y) {
+                    const uint16_t *row = (const uint16_t *)((const uint8_t *)fb + (size_t)y * disp->stride);
+                    for (int x0 = 0; x0 < IW; x0 += 64) {
+                        int n = 0;
+                        for (int x = x0; x < x0 + 64 && x < IW; ++x) { const unsigned v = row[x]; line[n++] = hx[v >> 12]; line[n++] = hx[(v >> 8) & 15]; line[n++] = hx[(v >> 4) & 15]; line[n++] = hx[v & 15]; }
+                        line[n] = 0;
+                        debugf("[fb] %s\n", line);
+                    }
+                }
+            }
+#endif
+            display_show(disp);
+            PROF_LEAVE();
+        } else rdpq_detach_show();
+    }
+#else
     rdpq_detach_show();
+#endif
     ++g_frames;
+#ifdef N64_PROF
+    PROF_COUNT(PC_AREA, g_prof_area * (1.0f / 1024.0f)); g_prof_area = 0.0f;
+#endif
 #ifdef N64_MEMLOG
     { static unsigned peak; unsigned n = 0, cur = 0, wasted = 0; for (int i = 0; i < CACHE_N; ++i) { if (g_c[i].used && g_frames - g_c[i].used < CACHE_GUARD) { ++n; wasted += 4096 - (unsigned)g_c[i].pw * g_c[i].th * 2; } if (g_c[i].used) ++cur; }
       if (n > peak) { peak = n; }
       if ((g_frames % 120) == 0) { unsigned nb = 0; for (int i = 0; i < CACHE_N; ++i) if (g_ublk[i]) ++nb; debugf("[tcache] inuse=%u peak=%u everused=%u wasted=%uKB ublk=%u live=%d headroom=%ldKB\n", n, peak, cur, wasted / 1024, nb, g_ublk_live, (long)(__heap_top - (char *)sbrk(0)) / 1024); } }
 #endif
-    gta2_n64_audio_poll();
+    PROF_ENTER(PF_AUDIO); gta2_n64_audio_poll(); PROF_LEAVE();
+    PROF_LEAVE();
+    PROF_FRAME();
 #if PACE_ENABLE
     { /* limitador de ritmo: ver comentario de PACE_TICK_MS. O tempo de espera conta como "espera", nao como desenho */
         const uint32_t tp0 = timer_ticks();
