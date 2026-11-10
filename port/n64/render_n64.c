@@ -435,6 +435,8 @@ uint32_t gta2_n64_tex_capture(N64Tex *t, float a_scr, float a_tex, int additive)
     const int slot = tex_slot(t, scale, 0.0f, additive);
     return slot < 0 ? 0u : TEX_TOKEN_BASE + (uint32_t)slot;
 }
+/* framebuffer pixels per unit of the 640x480 reference space (gbh_n64.cpp snaps 2D art to whole pixels with it) */
+void gta2_n64_fb_scale(float *sx, float *sy) { *sx = g_last_sx; *sy = g_last_sy; }
 /* 2D art (HUD, menus): kx, ky = pixels of the 640x480 reference space per texel along each axis (gbh_n64.cpp Draw) */
 uint32_t gta2_n64_tex_capture_xy(N64Tex *t, float kx, float ky, int additive)
 {

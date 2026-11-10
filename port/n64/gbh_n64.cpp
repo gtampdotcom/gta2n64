@@ -21,6 +21,7 @@
 extern "C" void gta2_n64_tex_forget(const N64Tex* t);
 extern "C" uint32_t gta2_n64_tex_capture(N64Tex* t, float a_scr, float a_tex, int additive);
 extern "C" uint32_t gta2_n64_tex_capture_xy(N64Tex* t, float kx, float ky, int additive);
+extern "C" void gta2_n64_fb_scale(float* sx, float* sy);
 extern "C" int gta2_n64_tex_token_empty(uint32_t token);
 extern "C" void gta2_n64_hud_xform(float* x, float* y);
 extern "C" int gN64HudOn;
@@ -551,6 +552,39 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
         }
         if (upright && u1 - u0 >= 1.0f && w1 - w0 >= 1.0f && x1 > x0 && y1 > y0)
         {
+            // Whole pixels: the top-left corner already sits on a framebuffer pixel (above); the size is rounded too, on
+            // every axis that is not being enlarged, so the copy made for it maps texel for pixel. A letter 10.5 pixels
+            // tall otherwise lost or doubled a row somewhere inside it (strokes of uneven thickness).
+            float fsx, fsy;
+            gta2_n64_fb_scale(&fsx, &fsy);
+            if (fsx > 0.0f && (x1 - x0) * fsx <= (u1 - u0) * 1.05f)
+            {
+                float px = floorf((x1 - x0) * fsx + 0.5f);
+                px = px < 1.0f ? 1.0f : px;
+                const float nx1 = x0 + px / fsx;
+                for (int i = 0; i < 4; ++i)
+                {
+                    if (v[i].x != x0)
+                    {
+                        v[i].x = nx1;
+                    }
+                }
+                x1 = nx1;
+            }
+            if (fsy > 0.0f && (y1 - y0) * fsy <= (w1 - w0) * 1.05f)
+            {
+                float py = floorf((y1 - y0) * fsy + 0.5f);
+                py = py < 1.0f ? 1.0f : py;
+                const float ny1 = y0 + py / fsy;
+                for (int i = 0; i < 4; ++i)
+                {
+                    if (v[i].y != y0)
+                    {
+                        v[i].y = ny1;
+                    }
+                }
+                y1 = ny1;
+            }
             texId = gta2_n64_tex_capture_xy(reinterpret_cast<N64Tex*>(tex->field_1C_ptr), (x1 - x0) / (u1 - u0), (y1 - y0) / (w1 - w0),
                                             blend == kBlendAdditive);
             sized = true;
