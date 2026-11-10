@@ -117,8 +117,8 @@ bool ensureRoom(FrameList<T>& v, size_t extra)
 // slot como em uso); se passar um quadro sem ele, a entrada e' descartada e refeita.
 namespace
 {
-constexpr uint32_t kTxtMaxVerts = 1200; // ~28 KB: ate 200 letras guardadas
-constexpr uint32_t kTxtMinVerts = 48;   // menos de 8 letras: nao compensa
+constexpr uint32_t kTxtMaxVerts = 1200; // ~28 KB: ate 300 letras guardadas
+constexpr uint32_t kTxtMinVerts = 32;   // menos de 8 letras (4 vertices cada): nao compensa
 constexpr int kTxtMaxCmds = 48;         // texturas distintas por frase
 constexpr int kTxtEntries = 8;
 constexpr uint32_t kTokBase = 0x10000u; // mesmo valor de TEX_TOKEN_BASE (render_n64.c)

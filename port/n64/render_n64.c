@@ -30,6 +30,9 @@
 #include <rdpq_font.h>
 extern const char *gta2_frame_text_pool(void); /* frame_n64.cpp: frases do quadro (comando kind 2) */
 
+/* libdragon builds with -ftrivial-auto-var-init=pattern (every local is filled before use); the scratch arrays of the
+ * per-primitive loops are fully written by the code itself, so they opt out of the extra fill. */
+#define NOINIT __attribute__((uninitialized))
 typedef struct { float x, y, w, u, v; uint32_t rgba; } FVert;                              /* = FrameVertex (render/frame.h) */
 typedef struct { uint32_t kind, texture, blend, first, count, colour; int32_t rect[4]; } FCmd; /* = FrameCommand */
 
@@ -245,7 +248,7 @@ static int tex_slot(N64Tex *t, float scale, int additive)
     g_next = (slot + 1) % CACHE_N;
     uint16_t *dst = g_cbuf + (size_t)slot * SLOT_U16;
 
-    uint32_t prgb_ram[256];
+    NOINIT uint32_t prgb_ram[256];
     const uint32_t *prgb;
     const uint32_t *pal = t->pal;
     if (in_rom(pal)) {
@@ -264,12 +267,12 @@ static int tex_slot(N64Tex *t, float scale, int additive)
         prgb = prgb_ram;
     }
     const uint8_t *src = src_pixels(t, w, h);
-    uint16_t xs[260];
+    NOINIT uint16_t xs[260];
     for (int x = 0; x <= tw; ++x) xs[x] = (uint16_t)(x * w / tw);
 
     int any_clear = 0, any_opaque = 0;
     if (tw == w && th == h) { /* sem reducao: cada texel e' so uma consulta numa tabela de 256 entradas (resultado identico ao caminho geral) */
-        uint16_t p16[256];
+        NOINIT uint16_t p16[256];
         p16[0] = 0;
         for (int i = 1; i < 256; ++i) {
             const uint32_t c = prgb[i];
@@ -486,7 +489,8 @@ static int try_texrect(const FVert *p, float sx, float sy, float ts, float tt)
 /* the same test on a list of corners: 6 = two loose triangles, 4 = the corners of a quad (see draw_quads) */
 static int try_texrect_n(const FVert *const *c, int n, float sx, float sy, float ts, float tt)
 {
-    float X[6], Y[6], minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f, wmin = 1e30f, wmax = 0.0f;
+    NOINIT float X[6], Y[6];
+    float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f, wmin = 1e30f, wmax = 0.0f;
     for (int i = 0; i < n; ++i) {
         const FVert *const p = c[i];
         X[i] = p->x * sx; Y[i] = p->y * sy;
@@ -501,7 +505,7 @@ static int try_texrect_n(const FVert *const *c, int n, float sx, float sy, float
     if (maxx - minx < 0.25f || maxy - miny < 0.25f) return 0;
     if (wmin > 0.0f && wmax < 1e20f && wmax > wmin * 1.001f) return 0; /* perspectiva de verdade: so triangulos */
     const float ex = 0.02f;
-    float cu[4] = {0}, cv[4] = {0};
+    NOINIT float cu[4], cv[4]; /* all four are written before use: seen == 15 */
     int seen = 0;
     for (int i = 0; i < n; ++i) {
         const FVert *const p = c[i];
@@ -540,6 +544,10 @@ static int try_texrect_n(const FVert *const *c, int n, float sx, float sy, float
     return 1;
 }
 
+/* What this file last set in the RDP's tile descriptors (0 = unknown: something else drew, or a new frame): consecutive
+ * uploads of textures of the same size (most map tiles) then send 2 commands instead of 5. */
+static int s_tile_known;         /* bit 0: TILE1 is the LOAD_BLOCK tile; bit 1: s_tile_pitch / s_tile_size are valid */
+static int s_tile_pitch, s_tile_size;
 /* Texture upload with the RDP commands written directly. This is the exact sequence rdpq_tex_upload(TILE0, surface, NULL)
  * emits for an RGBA16 surface (same tiles, same LOAD_BLOCK / LOAD_TILE choice), without its per-call set-up: that set-up was
  * ~40 us of CPU, about 120 times per frame. (The earlier answer to that cost, one recorded RSP block per cache slot, needed
@@ -554,15 +562,18 @@ static void tex_upload_raw(int slot)
     const int words = pw >> 2;                        /* 64-bit words per line */
     const int max_lines = words < 11 ? 4096 : (words - 11 < (int)sizeof(kBlockMaxLines) ? kBlockMaxLines[words - 11] : 0);
     rdpq_set_texture_image_raw(0, PhysicalAddr(g_cbuf + (size_t)slot * SLOT_U16), FMT_RGBA16, (uint16_t)pw, (uint16_t)th);
+    const int same_pitch = (s_tile_known & 2) && s_tile_pitch == pitch;
+    if (!same_pitch) rdpq_set_tile(TILE0, FMT_RGBA16, 0, (uint16_t)pitch, NULL);
     if (th <= max_lines) {
-        rdpq_set_tile(TILE1, FMT_RGBA16, 0, 0, NULL);
-        rdpq_set_tile(TILE0, FMT_RGBA16, 0, (uint16_t)pitch, NULL);
+        if (!(s_tile_known & 1)) rdpq_set_tile(TILE1, FMT_RGBA16, 0, 0, NULL);
         rdpq_load_block(TILE1, 0, 0, (uint16_t)(pw * th), (uint16_t)pitch);
-    } else {
-        rdpq_set_tile(TILE0, FMT_RGBA16, 0, (uint16_t)pitch, NULL);
+        if (!same_pitch || s_tile_size != ((pw << 16) | th)) rdpq_set_tile_size_fx(TILE0, 0, 0, (uint16_t)(pw * 4), (uint16_t)(th * 4));
+        s_tile_known |= 1;
+    } else { /* LOAD_TILE writes TILE0's size itself, so it is always set again afterwards */
         rdpq_load_tile_fx(TILE0, 0, 0, (uint16_t)(pw * 4), (uint16_t)(th * 4));
+        rdpq_set_tile_size_fx(TILE0, 0, 0, (uint16_t)(pw * 4), (uint16_t)(th * 4));
     }
-    rdpq_set_tile_size_fx(TILE0, 0, 0, (uint16_t)(pw * 4), (uint16_t)(th * 4));
+    s_tile_known |= 2; s_tile_pitch = pitch; s_tile_size = (pw << 16) | th;
 }
 
 /* ---- desenho de um comando (usado direto e dentro de blocos gravados do RSP) ---- */
@@ -600,9 +611,9 @@ static void blit_img(const FCmd *cm, float sx, float sy)
 }
 
 /* ---- quads ----
- * gbh_n64.cpp marks commands made only of quads (blend bit 0x200): every 6 vertices are corners 0,1,2 / 0,2,3 of one quad.
- * Knowing that, the rectangle test looks at 4 corners instead of 6 vertices, and each corner is converted once instead of
- * once per triangle. The tests and the arithmetic per triangle are the ones of the general loop in draw_cmd, so the
+ * gbh_n64.cpp marks commands made only of quads (blend bit 0x200): every 4 vertices are the corners of one quad, drawn as
+ * triangles 0,1,2 and 0,2,3. The rectangle test looks at 4 corners instead of 6 vertices, and each corner is converted once
+ * instead of once per triangle. (The render lab's flat-colour modes do not apply to quads.) The tests and the arithmetic per triangle are the ones of the general loop in draw_cmd, so the
  * picture is the same pixel for pixel. */
 #define BLEND_QUADS 0x200u
 /* Triangles go to the RSP as libdragon's rdpq_triangle() sends them (3 x TRIANGLE_DATA + TRIANGLE), but the words are built
@@ -691,11 +702,11 @@ static void draw_quads(const FCmd *cm, const FVert *verts, float sx, float sy, f
         for (int i = 0; i < 256; ++i) kCol8[i] = (uint8_t)(uint32_t)(((float)i * k255) * 255.0f);
         kCol8_ok = 1;
     }
-    for (uint32_t t = 0; t + 6 <= cm->count; t += 6) {
+    for (uint32_t t = 0; t + 4 <= cm->count; t += 4) {
         const FVert *const p = &verts[cm->first + t];
-        const FVert *const c[4] = { &p[0], &p[1], &p[2], &p[5] };
+        const FVert *const c[4] = { &p[0], &p[1], &p[2], &p[3] };
         if (is_tex == 2 && try_texrect_n(c, 4, sx, sy, ts, tt)) continue;
-        QVert q[4];
+        NOINIT QVert q[4];
         for (int k = 0; k < 4; ++k) {
             const FVert *const v = c[k];
             const float x = v->x * sx, y = v->y * sy;
@@ -730,16 +741,16 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
             rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
             rdpq_set_prim_color(RGBA32(cm->colour & 0xFF, (cm->colour >> 8) & 0xFF, (cm->colour >> 16) & 0xFF, a));
             rdpq_fill_rectangle(x0, y0, x1, y1);
-            s_valid = 0; s_up_slot = -1; s_persp = -1;
+            s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
         } else if (x1 > x0 && y1 > y0) {
             rdpq_set_mode_fill(RGBA32(cm->colour & 0xFF, (cm->colour >> 8) & 0xFF, (cm->colour >> 16) & 0xFF, 255));
             rdpq_fill_rectangle(x0, y0, x1, y1);
-            s_valid = 0; s_up_slot = -1; s_persp = -1; /* o modo de preenchimento substituiu o modo de desenho */
+            s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1; /* o modo de preenchimento substituiu o modo de desenho */
         }
         return;
     }
-    if (cm->kind == 3) { blit_img(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_persp = -1; return; } /* imagem do menu */
-    if (cm->kind == 2) { nfont_draw(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_persp = -1; return; } /* frase com a fonte do N64: o rdpq_text troca o modo do RDP */
+    if (cm->kind == 3) { blit_img(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1; return; } /* imagem do menu */
+    if (cm->kind == 2) { nfont_draw(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1; return; } /* frase com a fonte do N64: o rdpq_text troca o modo do RDP */
     if (cm->kind != 0 || cm->count < 3) return;
     if (g_dbg == 1 && (cm->blend & 0xFFu) != 0) return;
     if (g_dbg == 2 && (cm->blend & 0xFFu) == 0) return;
@@ -801,7 +812,7 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
     }
 
     const float ts = slot >= 0 ? (float)g_c[slot].tw : 1.0f, tt = slot >= 0 ? (float)g_c[slot].th : 1.0f;
-    if ((cm->blend & BLEND_QUADS) && g_dbg == 0) { draw_quads(cm, verts, sx, sy, ts, tt, is_tex); return; }
+    if (cm->blend & BLEND_QUADS) { draw_quads(cm, verts, sx, sy, ts, tt, is_tex); return; }
     for (uint32_t t = 0; t + 2 < cm->count; t += 3) {
         const FVert *p = &verts[cm->first + t];
         if (is_tex == 2 && t + 5 < cm->count) {
@@ -901,7 +912,7 @@ static void blk_run(const FCmd *cm, int n, const FVert *verts, float sx, float s
     if (ok) {
         for (int d = 0; d < b->ndep; ++d) g_c[b->dslot[d]].used = g_frames + 1; /* mantem os slots protegidos */
         rspq_block_run(b->blk);
-        s_valid = 0; s_up_slot = -1; s_persp = -1;
+        s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
 
         return;
     }
@@ -919,13 +930,13 @@ static void blk_run(const FCmd *cm, int n, const FVert *verts, float sx, float s
         if (j == ndep) dslot[ndep++] = sl;
     }
     if (!heap_has_room()) { run_cmds(cm, n, verts, sx, sy, IW, IH); return; } /* sem folga de memoria: desenha direto */
-    s_valid = 0; s_up_slot = -1; s_persp = -1;
+    s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
     s_rec = 1;
     rspq_block_begin();
     run_cmds(cm, n, verts, sx, sy, IW, IH);
     rspq_block_t *nb = rspq_block_end();
     s_rec = 0;
-    s_valid = 0; s_up_slot = -1; s_persp = -1;
+    s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
     if (!nb) { return; } /* nao deveria acontecer; sem bloco este quadro fica sem o texto */
     b->blk = nb;
     b->stamp = stamp; b->nruns = (uint32_t)n; b->optf = optf; b->sxb = sxb; b->syb = syb; b->ndep = ndep;
@@ -998,7 +1009,7 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
     rdpq_fill_rectangle(0, 0, IW, IH);
     PROF_LEAVE();
 
-    s_valid = 0; s_tex = -1; s_blend = -1; s_up_slot = -1; s_persp = -1;
+    s_valid = 0; s_tex = -1; s_blend = -1; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
     for (int c = 0; c < cmdCount; ) {
         const FCmd *cm = &cmds[c];
         if (cm->kind == 0 && cm->rect[3] != 0) { /* texto estatico marcado: tenta o bloco do RSP */
