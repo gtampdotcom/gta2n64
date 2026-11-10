@@ -58,21 +58,23 @@ void gta2_n64_prof_leave(void)
 void gta2_n64_prof_count(int id, unsigned n) { pc_acc[id] += n; }
 /* Sampling profiler: a ~2 kHz timer interrupt records where the CPU was (EPC), as a histogram over the code in 32-byte buckets
  * (functions are aligned to 32). Only samples inside the bench window count. Dumped at the end as "[smp] addr:count ..." lines;
- * the host turns them into a per-function table with the ELF's symbols (tools/prof_symbols.py). */
+ * the host turns them into the hot-function link order (tools/prof_order.py). */
 #ifdef N64_PROF_SAMPLE
 extern char __text_start[], __text_end[];
 #define SMP_SHIFT 5
 #define SMP_MAX (0x1E0000 >> SMP_SHIFT)
 static uint16_t smp_hist[SMP_MAX];
+static uint8_t smp_phase[SMP_MAX]; /* profiler section of the last sample in the bucket */
 static uint32_t smp_total, smp_out, smp_sec[PF_N + 1];
 static void smp_cb(int ovfl)
 {
     (void)ovfl;
     if (pf_state != 1) return;
     const uint32_t i = ((uint32_t)C0_EPC() - (uint32_t)(uintptr_t)__text_start) >> SMP_SHIFT;
-    if (i < SMP_MAX) { if (smp_hist[i] != 0xFFFF) ++smp_hist[i]; } else ++smp_out;
+    const int sec = pf_sp > 0 && pf_sp <= 16 ? pf_stk[pf_sp - 1] : PF_N;
+    if (i < SMP_MAX) { if (smp_hist[i] != 0xFFFF) ++smp_hist[i]; smp_phase[i] = (uint8_t)sec; } else ++smp_out;
     ++smp_total;
-    ++smp_sec[pf_sp > 0 && pf_sp <= 16 ? pf_stk[pf_sp - 1] : PF_N];
+    ++smp_sec[sec];
 }
 static void smp_dump(void)
 {
@@ -84,7 +86,7 @@ static void smp_dump(void)
     n = 0;
     for (uint32_t i = 0; i < SMP_MAX; ++i) {
         if (!smp_hist[i]) continue;
-        n += snprintf(b + n, sizeof(b) - n, " %x:%u", (unsigned)((uint32_t)(uintptr_t)__text_start + (i << SMP_SHIFT)), (unsigned)smp_hist[i]);
+        n += snprintf(b + n, sizeof(b) - n, " %x:%u:%u", (unsigned)((uint32_t)(uintptr_t)__text_start + (i << SMP_SHIFT)), (unsigned)smp_hist[i], (unsigned)smp_phase[i]);
         if (n > 220) { debugf("[smp]%s\n", b); n = 0; }
     }
     if (n) debugf("[smp]%s\n", b);
@@ -287,6 +289,45 @@ static void read_boot_choice(void)
     if (in.btn.z) gta2_n64_boot_map = in.btn.c_left ? 2 : in.btn.c_down ? 1 : 0;
 }
 
+#ifdef N64_MICROBENCH
+/* What the machine (or the emulator's model of it) charges for the basic things: plain instructions, a call that misses the
+ * instruction cache, a load that misses the data cache, float maths. Printed once at boot. */
+static volatile uint32_t mb_sink;
+static void microbench(void)
+{
+    const double ns = 1e9 / (double)TICKS_PER_SECOND;
+    uint32_t t0, t1;
+    uint8_t *buf = (uint8_t *)memalign(16384, 5 * 16384);
+    if (!buf) { debugf("[mb] no memory\n"); return; }
+    /* 1) integer loop, everything cached: 4 instructions per iteration */
+    { uint32_t a = 1; t0 = TICKS_READ(); for (int i = 0; i < 200000; ++i) { a = a * 3u + (uint32_t)i; } t1 = TICKS_READ(); mb_sink = a; debugf("[mb] int loop: %.1f ns/iter\n", (double)(t1 - t0) * ns / 200000.0); }
+    /* 2) float loop */
+    { volatile float fa = 1.0f; float f = fa; t0 = TICKS_READ(); for (int i = 0; i < 200000; ++i) { f = f * 1.0001f + 0.5f; } t1 = TICKS_READ(); fa = f; debugf("[mb] float mul+add: %.1f ns/iter\n", (double)(t1 - t0) * ns / 200000.0); }
+    { volatile float fa = 3.0f; float f = fa, g = 1.0f; t0 = TICKS_READ(); for (int i = 0; i < 50000; ++i) { g = g / f + 1.0f; } t1 = TICKS_READ(); fa = g; debugf("[mb] float div+add: %.1f ns/iter\n", (double)(t1 - t0) * ns / 50000.0); }
+    { volatile float fa = 3.7f; float f = fa; int k = 0; t0 = TICKS_READ(); for (int i = 0; i < 100000; ++i) { k += (int)(f + (float)i); } t1 = TICKS_READ(); mb_sink = (uint32_t)k; debugf("[mb] int->float->int: %.1f ns/iter\n", (double)(t1 - t0) * ns / 100000.0); }
+    /* 3) data cache: one load per 16-byte line over 2 KB (all hits after the first pass) and over 64 KB (all misses) */
+    memset(buf, 1, 5 * 16384);
+    { uint32_t a = 0; for (int r = 0; r < 2; ++r) for (int i = 0; i < 2048; i += 16) a += buf[i]; t0 = TICKS_READ(); for (int r = 0; r < 400; ++r) for (int i = 0; i < 2048; i += 16) a += buf[i]; t1 = TICKS_READ(); mb_sink = a; debugf("[mb] load, cache hit: %.1f ns\n", (double)(t1 - t0) * ns / (400.0 * 128.0)); }
+    { uint32_t a = 0; t0 = TICKS_READ(); for (int r = 0; r < 12; ++r) for (int i = 0; i < 65536; i += 16) a += buf[i]; t1 = TICKS_READ(); mb_sink = a; debugf("[mb] load, cache miss: %.1f ns\n", (double)(t1 - t0) * ns / (12.0 * 4096.0)); }
+    { t0 = TICKS_READ(); for (int r = 0; r < 12; ++r) for (int i = 0; i < 65536; i += 16) buf[i] = (uint8_t)r; t1 = TICKS_READ(); debugf("[mb] store, cache miss: %.1f ns\n", (double)(t1 - t0) * ns / (12.0 * 4096.0)); }
+    /* 4) instruction cache: 4 tiny functions ("jr ra; nop") called in turn, first 32 bytes apart, then 16 KB apart (same cache line index) */
+    for (int k = 0; k < 2; ++k) {
+        void (*fn[4])(void);
+        for (int i = 0; i < 4; ++i) {
+            uint32_t *c = (uint32_t *)(buf + (k ? i * 16384 : i * 32));
+            c[0] = 0x03E00008u; c[1] = 0;
+            fn[i] = (void (*)(void))c;
+        }
+        data_cache_hit_writeback_invalidate(buf, 5 * 16384);
+        inst_cache_hit_invalidate(buf, 5 * 16384);
+        for (int i = 0; i < 8; ++i) fn[i & 3]();
+        t0 = TICKS_READ(); for (int i = 0; i < 40000; ++i) fn[i & 3](); t1 = TICKS_READ();
+        debugf("[mb] call+return, %s: %.1f ns\n", k ? "icache conflict" : "icache hit", (double)(t1 - t0) * ns / 40000.0);
+    }
+    free(buf);
+}
+#endif
+
 int main(void)
 {
     debug_init_isviewer();
@@ -309,6 +350,9 @@ int main(void)
     vi_set_borders((vi_borders_t){ N64_OVERSCAN_X, N64_OVERSCAN_X, N64_OVERSCAN_Y, N64_OVERSCAN_Y });
     /* resolucao: console_init() deixa a tela em 640x240 (mesma configuracao do build que ficou sem linhas) */
     timer_init();
+#ifdef N64_MICROBENCH
+    microbench();
+#endif
     gta2_install_exception_fixups();
     joypad_init();
     const int dfs = dfs_init(DFS_DEFAULT_LOCATION);

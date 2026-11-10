@@ -184,6 +184,11 @@ void gta2_n64_render_prealloc(void)
     }
 }
 
+/* Hot and cold code are kept in separate functions on purpose: the instruction cache is 16 KB, direct mapped, and the
+ * functions that run for every draw are linked next to each other (port/n64/hot_order.txt). A rarely taken branch
+ * inlined into one of them would only push the others out of the cache. */
+#define COLD_FN __attribute__((noinline, cold))
+static int tex_convert(N64Tex *t, float scale, int additive);
 static int tex_slot(N64Tex *t, float scale, int additive)
 {
     if (!t) return texfail(t, 0);
@@ -208,6 +213,12 @@ static int tex_slot(N64Tex *t, float scale, int additive)
         if (!g_cbuf) return -1;
         memset(g_c, 0, sizeof(g_c));
     }
+    return tex_convert(t, scale, additive);
+}
+
+/* converts the texture into a cache slot (the slow part of tex_slot: only when a texture is new or shown bigger) */
+static __attribute__((noinline)) int tex_convert(N64Tex *t, float scale, int additive)
+{
     PROF_ENTER(PF_TEXCONV); PROF_COUNT(PC_CONV, 1);
     const int w = t->w, h = t->h;
     int tw = w, th = h;
@@ -725,7 +736,8 @@ static void draw_quads(const FCmd *cm, const FVert *verts, float sx, float sy, f
     }
 }
 
-static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int IW, int IH)
+/* kinds 1 (clear / translucent panel), 3 (menu image) and 2 (built-in font text) */
+static COLD_FN void draw_cmd_misc(const FCmd *cm, float sx, float sy, int IW, int IH)
 {
     if (cm->kind == 1) { /* limpar retangulo */
         int x0 = (int)(cm->rect[0] * sx), y0 = (int)(cm->rect[1] * sy);
@@ -751,7 +763,75 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
     }
     if (cm->kind == 3) { blit_img(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1; return; } /* imagem do menu */
     if (cm->kind == 2) { nfont_draw(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1; return; } /* frase com a fonte do N64: o rdpq_text troca o modo do RDP */
-    if (cm->kind != 0 || cm->count < 3) return;
+}
+
+/* commands of loose triangles (not marked as quads): the general loop */
+static COLD_FN void draw_tris_generic(const FCmd *cm, const FVert *verts, float sx, float sy, float ts, float tt, int is_tex,
+                                      float flat_r, float flat_g, float flat_b)
+{
+    for (uint32_t t = 0; t + 2 < cm->count; t += 3) {
+        const FVert *p = &verts[cm->first + t];
+        if (is_tex == 2 && t + 5 < cm->count) {
+            if (try_texrect(p, sx, sy, ts, tt)) { t += 3; continue; } /* +3 do for = 6 vertices */
+        }
+        float v[3][9];
+        int bad = 0;
+        float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f;
+        float wmax = 0.0f, wmin = 1e30f;
+        for (int k = 0; k < 3; ++k) {
+            float x = p[k].x * sx, y = p[k].y * sy;
+            if (!(x > -1500.0f && x < 1500.0f && y > -1500.0f && y < 1500.0f)) { bad = 1; break; }
+            if (x < minx) minx = x;
+            if (x > maxx) maxx = x;
+            if (y < miny) miny = y;
+            if (y > maxy) maxy = y;
+            if (p[k].w > wmax) wmax = p[k].w;
+            if (p[k].w < wmin) wmin = p[k].w;
+        }
+        if (bad || maxx < 0 || minx > SCR_W || maxy < 0 || miny > SCR_H) { continue; }
+        const float wr = (wmin > 0.0f && wmax < 1e20f) ? wmax / wmin : 1.0f;
+        const float inv_wmax = wmax > 0.0f ? 1.0f / wmax : 0.0f; /* one divide per triangle instead of three */
+        const int persp_ok = g_opt_persp && wmin > 0.0f && wmax < 1e20f && (g_opt_persp == 1 || wr >= PERSP_MIN_RATIO);
+        float tr = 0.0f, tg = 0.0f, tb = 0.0f; /* depuracao 4: cor pela razao de w */
+        if (g_dbg == 4) {
+            if (wr < 1.1f)       { tg = 0.9f; }
+            else if (wr < 1.25f) { tr = 0.9f; tg = 0.9f; }
+            else if (wr < 1.5f)  { tr = 1.0f; tg = 0.5f; }
+            else                 { tr = 1.0f; }
+        }
+        for (int k = 0; k < 3; ++k) {
+            const uint32_t d = p[k].rgba;
+            v[k][0] = p[k].x * sx; v[k][1] = p[k].y * sy;
+            /* multiplies by 1/255 (the compiler keeps a divide otherwise: ~29 cycles each on the VR4300) */
+            const float k255 = 1.0f / 255.0f;
+            v[k][2] = g_dbg == 4 ? tr : (float)(d & 0xFF) * (k255 * flat_r);
+            v[k][3] = g_dbg == 4 ? tg : (float)((d >> 8) & 0xFF) * (k255 * flat_g);
+            v[k][4] = g_dbg == 4 ? tb : (float)((d >> 16) & 0xFF) * (k255 * flat_b);
+            v[k][5] = ((cm->blend & 0xFFu) == 0) ? 1.0f : ((cm->blend & 0xFFu) == 2) ? 0.75f : (float)(d >> 24) * k255; /* aditivo: o PC ignorava o alfa */
+            const float iw = persp_ok ? p[k].w * inv_wmax : 1.0f;  /* normalizado: o que importa e a razao entre vertices */
+            const float pm = 1.0f;
+            v[k][6] = p[k].u * ts * pm; v[k][7] = p[k].v * tt * pm; v[k][8] = iw;
+        }
+        if (is_tex) { /* perspectiva so onde o w realmente varia; com w igual o resultado e' o mesmo sem ela */
+            const int want = (persp_ok && wr > 1.001f) ? 1 : 0;
+            if (want != s_persp) { rdpq_mode_persp(want != 0); s_persp = want; }
+        }
+
+        
+        PROF_COUNT(PC_TRIS, 1);
+#ifdef N64_PROF
+        g_prof_area += 0.5f * fabsf((v[1][0] - v[0][0]) * (v[2][1] - v[0][1]) - (v[2][0] - v[0][0]) * (v[1][1] - v[0][1]));
+#endif
+        if (is_tex == 2)  { rdpq_triangle(&kFmtTexOnly, v[0], v[1], v[2]); }
+        else if (is_tex)  rdpq_triangle(&kFmtTex, v[0], v[1], v[2]);
+        else              rdpq_triangle(&TRIFMT_SHADE, v[0], v[1], v[2]);
+    }
+}
+
+static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int IW, int IH)
+{
+    if (__builtin_expect(cm->kind != 0, 0)) { draw_cmd_misc(cm, sx, sy, IW, IH); return; }
+    if (cm->count < 3) return;
     if (g_dbg == 1 && (cm->blend & 0xFFu) != 0) return;
     if (g_dbg == 2 && (cm->blend & 0xFFu) == 0) return;
 
@@ -813,63 +893,7 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
 
     const float ts = slot >= 0 ? (float)g_c[slot].tw : 1.0f, tt = slot >= 0 ? (float)g_c[slot].th : 1.0f;
     if (cm->blend & BLEND_QUADS) { draw_quads(cm, verts, sx, sy, ts, tt, is_tex); return; }
-    for (uint32_t t = 0; t + 2 < cm->count; t += 3) {
-        const FVert *p = &verts[cm->first + t];
-        if (is_tex == 2 && t + 5 < cm->count) {
-            if (try_texrect(p, sx, sy, ts, tt)) { t += 3; continue; } /* +3 do for = 6 vertices */
-        }
-        float v[3][9];
-        int bad = 0;
-        float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f;
-        float wmax = 0.0f, wmin = 1e30f;
-        for (int k = 0; k < 3; ++k) {
-            float x = p[k].x * sx, y = p[k].y * sy;
-            if (!(x > -1500.0f && x < 1500.0f && y > -1500.0f && y < 1500.0f)) { bad = 1; break; }
-            if (x < minx) minx = x;
-            if (x > maxx) maxx = x;
-            if (y < miny) miny = y;
-            if (y > maxy) maxy = y;
-            if (p[k].w > wmax) wmax = p[k].w;
-            if (p[k].w < wmin) wmin = p[k].w;
-        }
-        if (bad || maxx < 0 || minx > SCR_W || maxy < 0 || miny > SCR_H) { continue; }
-        const float wr = (wmin > 0.0f && wmax < 1e20f) ? wmax / wmin : 1.0f;
-        const float inv_wmax = wmax > 0.0f ? 1.0f / wmax : 0.0f; /* one divide per triangle instead of three */
-        const int persp_ok = g_opt_persp && wmin > 0.0f && wmax < 1e20f && (g_opt_persp == 1 || wr >= PERSP_MIN_RATIO);
-        float tr = 0.0f, tg = 0.0f, tb = 0.0f; /* depuracao 4: cor pela razao de w */
-        if (g_dbg == 4) {
-            if (wr < 1.1f)       { tg = 0.9f; }
-            else if (wr < 1.25f) { tr = 0.9f; tg = 0.9f; }
-            else if (wr < 1.5f)  { tr = 1.0f; tg = 0.5f; }
-            else                 { tr = 1.0f; }
-        }
-        for (int k = 0; k < 3; ++k) {
-            const uint32_t d = p[k].rgba;
-            v[k][0] = p[k].x * sx; v[k][1] = p[k].y * sy;
-            /* multiplies by 1/255 (the compiler keeps a divide otherwise: ~29 cycles each on the VR4300) */
-            const float k255 = 1.0f / 255.0f;
-            v[k][2] = g_dbg == 4 ? tr : (float)(d & 0xFF) * (k255 * flat_r);
-            v[k][3] = g_dbg == 4 ? tg : (float)((d >> 8) & 0xFF) * (k255 * flat_g);
-            v[k][4] = g_dbg == 4 ? tb : (float)((d >> 16) & 0xFF) * (k255 * flat_b);
-            v[k][5] = ((cm->blend & 0xFFu) == 0) ? 1.0f : ((cm->blend & 0xFFu) == 2) ? 0.75f : (float)(d >> 24) * k255; /* aditivo: o PC ignorava o alfa */
-            const float iw = persp_ok ? p[k].w * inv_wmax : 1.0f;  /* normalizado: o que importa e a razao entre vertices */
-            const float pm = 1.0f;
-            v[k][6] = p[k].u * ts * pm; v[k][7] = p[k].v * tt * pm; v[k][8] = iw;
-        }
-        if (is_tex) { /* perspectiva so onde o w realmente varia; com w igual o resultado e' o mesmo sem ela */
-            const int want = (persp_ok && wr > 1.001f) ? 1 : 0;
-            if (want != s_persp) { rdpq_mode_persp(want != 0); s_persp = want; }
-        }
-
-        
-        PROF_COUNT(PC_TRIS, 1);
-#ifdef N64_PROF
-        g_prof_area += 0.5f * fabsf((v[1][0] - v[0][0]) * (v[2][1] - v[0][1]) - (v[2][0] - v[0][0]) * (v[1][1] - v[0][1]));
-#endif
-        if (is_tex == 2)  { rdpq_triangle(&kFmtTexOnly, v[0], v[1], v[2]); }
-        else if (is_tex)  rdpq_triangle(&kFmtTex, v[0], v[1], v[2]);
-        else              rdpq_triangle(&TRIFMT_SHADE, v[0], v[1], v[2]);
-    }
+    draw_tris_generic(cm, verts, sx, sy, ts, tt, is_tex, flat_r, flat_g, flat_b);
 }
 
 /* ---- blocos do RSP para texto estatico (briefing etc.) ----
