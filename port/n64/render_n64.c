@@ -477,33 +477,42 @@ static int s_persp = -1; /* perspectiva do RDP no momento (-1 = desconhecida): l
 /* 6 vertices consecutivos (2 triangulos) que formam um retangulo alinhado aos eixos, sem rotacao nem perspectiva e com a
  * textura sem espelhar: desenha com UM comando rdpq_texture_rectangle em vez de 2 rdpq_triangle (texto, HUD, rostos, placas).
  * Retorna 1 se tratou os 6 vertices (desenhou ou descartou por estar fora da tela), 0 se nao e' um retangulo (use triangulos). */
+static int try_texrect_n(const FVert *const *c, int n, float sx, float sy, float ts, float tt);
 static int try_texrect(const FVert *p, float sx, float sy, float ts, float tt)
 {
+    const FVert *const c[6] = { &p[0], &p[1], &p[2], &p[3], &p[4], &p[5] };
+    return try_texrect_n(c, 6, sx, sy, ts, tt);
+}
+/* the same test on a list of corners: 6 = two loose triangles, 4 = the corners of a quad (see draw_quads) */
+static int try_texrect_n(const FVert *const *c, int n, float sx, float sy, float ts, float tt)
+{
     float X[6], Y[6], minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f, wmin = 1e30f, wmax = 0.0f;
-    for (int i = 0; i < 6; ++i) {
-        X[i] = p[i].x * sx; Y[i] = p[i].y * sy;
+    for (int i = 0; i < n; ++i) {
+        const FVert *const p = c[i];
+        X[i] = p->x * sx; Y[i] = p->y * sy;
         if (!(X[i] > -1500.0f && X[i] < 1500.0f && Y[i] > -1500.0f && Y[i] < 1500.0f)) return 0;
         if (X[i] < minx) minx = X[i];
         if (X[i] > maxx) maxx = X[i];
         if (Y[i] < miny) miny = Y[i];
         if (Y[i] > maxy) maxy = Y[i];
-        if (p[i].w > wmax) wmax = p[i].w;
-        if (p[i].w < wmin) wmin = p[i].w;
+        if (p->w > wmax) wmax = p->w;
+        if (p->w < wmin) wmin = p->w;
     }
     if (maxx - minx < 0.25f || maxy - miny < 0.25f) return 0;
     if (wmin > 0.0f && wmax < 1e20f && wmax > wmin * 1.001f) return 0; /* perspectiva de verdade: so triangulos */
     const float ex = 0.02f;
     float cu[4] = {0}, cv[4] = {0};
     int seen = 0;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < n; ++i) {
+        const FVert *const p = c[i];
         int col, row;
         if (fabsf(X[i] - minx) < ex) col = 0; else if (fabsf(X[i] - maxx) < ex) col = 1; else return 0;
         if (fabsf(Y[i] - miny) < ex) row = 0; else if (fabsf(Y[i] - maxy) < ex) row = 1; else return 0;
-        const int c = col + 2 * row; /* 0 = topo-esq, 1 = topo-dir, 2 = base-esq, 3 = base-dir */
-        if (seen & (1 << c)) {
-            if (fabsf(cu[c] - p[i].u) > 0.002f || fabsf(cv[c] - p[i].v) > 0.002f) return 0;
+        const int k = col + 2 * row; /* 0 = topo-esq, 1 = topo-dir, 2 = base-esq, 3 = base-dir */
+        if (seen & (1 << k)) {
+            if (fabsf(cu[k] - p->u) > 0.002f || fabsf(cv[k] - p->v) > 0.002f) return 0;
         } else {
-            cu[c] = p[i].u; cv[c] = p[i].v; seen |= 1 << c;
+            cu[k] = p->u; cv[k] = p->v; seen |= 1 << k;
         }
     }
     if (seen != 15) return 0;
@@ -520,7 +529,9 @@ static int try_texrect(const FVert *p, float sx, float sy, float ts, float tt)
     if (y1 > SCR_H) { t1 -= (y1 - SCR_H) * dtdy; y1 = SCR_H; }
     if (x1 - x0 < 0.25f || y1 - y0 < 0.25f) { return 1; }
     if (s_persp != 0) { rdpq_mode_persp(0); s_persp = 0; } /* retangulo + perspectiva ligada saia chapado */
+    PROF_ENTER(PF_RECT);
     rdpq_texture_rectangle_scaled(TILE0, x0, y0, x1, y1, s0, t0, s1, t1);
+    PROF_LEAVE();
     PROF_COUNT(PC_RECTS, 1);
 #ifdef N64_PROF
     g_prof_area += (x1 - x0) * (y1 - y0);
@@ -588,6 +599,121 @@ static void blit_img(const FCmd *cm, float sx, float sy)
     rdpq_tex_blit(&surf, (float)(int32_t)cm->first * sx, (float)(int32_t)cm->count * sy, &bp);
 }
 
+/* ---- quads ----
+ * gbh_n64.cpp marks commands made only of quads (blend bit 0x200): every 6 vertices are corners 0,1,2 / 0,2,3 of one quad.
+ * Knowing that, the rectangle test looks at 4 corners instead of 6 vertices, and each corner is converted once instead of
+ * once per triangle. The tests and the arithmetic per triangle are the ones of the general loop in draw_cmd, so the
+ * picture is the same pixel for pixel. */
+#define BLEND_QUADS 0x200u
+/* Triangles go to the RSP as libdragon's rdpq_triangle() sends them (3 x TRIANGLE_DATA + TRIANGLE), but the words are built
+ * here from the frame vertex: rdpq_triangle() takes floats, so every colour byte went byte -> float -> byte, and it calls
+ * floorf()/floor() from libm for each coordinate: ~37 us per triangle, the largest single cost of presenting a frame.
+ * The values written are the same ones, bit for bit (kCol8 reproduces the float round trip of the colour bytes).
+ * N64_FAST_TRI=0 goes back to rdpq_triangle() (if a future libdragon changes these RSP commands). */
+#ifndef N64_FAST_TRI
+#define N64_FAST_TRI 1
+#endif
+typedef struct { float x, y, w, s, t; uint32_t rgba_f; uint32_t xy, rgba, st; } QVert;
+static uint8_t kCol8[256];
+static int kCol8_ok;
+static inline int32_t floor_i32(float f) { int32_t i = (int32_t)f; if ((float)i > f) --i; return i; }
+static inline int32_t fx16_16(float f) /* = float_to_s16_16 of rdpq_tri.c */
+{
+    if (f >= 32768.f) return 0x7FFFFFFF;
+    if (f < -32768.f) return (int32_t)0x80000000;
+    return floor_i32(f * 65536.f);
+}
+extern void __rdpq_autosync_use(uint32_t res);
+static void quad_tri(const QVert *a, const QVert *b, const QVert *c, int is_tex, uint32_t bmode)
+{
+    const QVert *const q[3] = { a, b, c };
+    float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f, wmax = 0.0f, wmin = 1e30f;
+    for (int k = 0; k < 3; ++k) {
+        const float x = q[k]->x, y = q[k]->y, w = q[k]->w;
+        if (!(x > -1500.0f && x < 1500.0f && y > -1500.0f && y < 1500.0f)) return;
+        if (x < minx) minx = x;
+        if (x > maxx) maxx = x;
+        if (y < miny) miny = y;
+        if (y > maxy) maxy = y;
+        if (w > wmax) wmax = w;
+        if (w < wmin) wmin = w;
+    }
+    if (maxx < 0 || minx > SCR_W || maxy < 0 || miny > SCR_H) return;
+    const int persp_ok = wmin > 0.0f && wmax < 1e20f;
+    const float inv_wmax = persp_ok ? 1.0f / wmax : 0.0f;
+    if (is_tex) {
+        const int want = (persp_ok && wmax / wmin > 1.001f) ? 1 : 0;
+        if (want != s_persp) { PROF_ENTER(PF_MODE); rdpq_mode_persp(want != 0); s_persp = want; PROF_LEAVE(); }
+    }
+    PROF_COUNT(PC_TRIS, 1);
+#ifdef N64_PROF
+    g_prof_area += 0.5f * fabsf((b->x - a->x) * (c->y - a->y) - (c->x - a->x) * (b->y - a->y));
+#endif
+    PROF_ENTER(PF_TRI);
+#if N64_FAST_TRI
+    __rdpq_autosync_use(is_tex ? (AUTOSYNC_PIPE | AUTOSYNC_TILE(0) | AUTOSYNC_TMEM(0)) : AUTOSYNC_PIPE);
+    for (int k = 0; k < 3; ++k) {
+        int32_t w = 0, inv_w = 0;
+        if (is_tex) {
+            const float iw = persp_ok ? q[k]->w * inv_wmax : 1.0f;
+            w = fx16_16(1.0f / iw);
+            inv_w = fx16_16(iw);
+        }
+        rspq_write(RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE_DATA, 32 * k, q[k]->xy, 0, is_tex == 2 ? 0u : q[k]->rgba, is_tex ? q[k]->st : 0u, w, inv_w);
+    }
+    {   /* RDP words the RSP will generate: 4 for the edges, + 8 with shade, + 8 with texture */
+        const uint32_t cmd_id = RDPQ_CMD_TRI | (is_tex != 2 ? 0x4u : 0u) | (is_tex ? 0x2u : 0u);
+        const int rdp_words = 4 + (is_tex != 2 ? 8 : 0) + (is_tex ? 8 : 0);
+        rdpq_write(rdp_words, RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE, 0xC000 | (cmd_id << 8));
+    }
+#else
+    {
+        float v[3][9];
+        const float k255 = 1.0f / 255.0f;
+        for (int k = 0; k < 3; ++k) {
+            const uint32_t d = q[k]->rgba_f;
+            v[k][0] = q[k]->x; v[k][1] = q[k]->y;
+            v[k][2] = (float)(d & 0xFF) * k255; v[k][3] = (float)((d >> 8) & 0xFF) * k255; v[k][4] = (float)((d >> 16) & 0xFF) * k255;
+            v[k][5] = bmode == 0 ? 1.0f : bmode == 2 ? 0.75f : (float)(d >> 24) * k255;
+            v[k][6] = q[k]->s; v[k][7] = q[k]->t; v[k][8] = persp_ok ? q[k]->w * inv_wmax : 1.0f;
+        }
+        rdpq_triangle(is_tex == 2 ? &kFmtTexOnly : is_tex ? &kFmtTex : &TRIFMT_SHADE, v[0], v[1], v[2]);
+    }
+#endif
+    (void)bmode;
+    PROF_LEAVE();
+}
+static void draw_quads(const FCmd *cm, const FVert *verts, float sx, float sy, float ts, float tt, int is_tex)
+{
+    const uint32_t bmode = cm->blend & 0xFFu;
+    if (!kCol8_ok) { /* what rdpq_triangle() makes of a colour byte: (uint32_t)((byte / 255) * 255) in single precision */
+        const float k255 = 1.0f / 255.0f;
+        for (int i = 0; i < 256; ++i) kCol8[i] = (uint8_t)(uint32_t)(((float)i * k255) * 255.0f);
+        kCol8_ok = 1;
+    }
+    for (uint32_t t = 0; t + 6 <= cm->count; t += 6) {
+        const FVert *const p = &verts[cm->first + t];
+        const FVert *const c[4] = { &p[0], &p[1], &p[2], &p[5] };
+        if (is_tex == 2 && try_texrect_n(c, 4, sx, sy, ts, tt)) continue;
+        QVert q[4];
+        for (int k = 0; k < 4; ++k) {
+            const FVert *const v = c[k];
+            const float x = v->x * sx, y = v->y * sy;
+            q[k].x = x; q[k].y = y; q[k].w = v->w;
+            q[k].s = v->u * ts; q[k].t = v->v * tt;
+            q[k].rgba_f = v->rgba;
+            if (!(x > -1500.0f && x < 1500.0f && y > -1500.0f && y < 1500.0f)) continue; /* its triangles are skipped: no fixed-point words needed */
+            q[k].xy = ((uint32_t)floor_i32(x * 4.0f) << 16) | ((uint32_t)floor_i32(y * 4.0f) & 0xFFFFu);
+            const uint32_t d = v->rgba; /* r | g << 8 | b << 16 | a << 24 */
+            const uint32_t al = bmode == 0 ? 255u : bmode == 2 ? 191u : kCol8[d >> 24];
+            q[k].rgba = ((uint32_t)kCol8[d & 0xFF] << 24) | ((uint32_t)kCol8[(d >> 8) & 0xFF] << 16) | ((uint32_t)kCol8[(d >> 16) & 0xFF] << 8) | al;
+            q[k].st = ((uint32_t)(int32_t)(q[k].s * 32.0f) << 16) | ((uint32_t)(int32_t)(q[k].t * 32.0f) & 0xFFFFu);
+        }
+        quad_tri(&q[0], &q[1], &q[2], is_tex, bmode);
+        quad_tri(&q[0], &q[2], &q[3], is_tex, bmode);
+    }
+}
+
 static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int IW, int IH)
 {
     if (cm->kind == 1) { /* limpar retangulo */
@@ -638,7 +764,8 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         }
         if (white) is_tex = 2;
     }
-    if (!s_valid || is_tex != s_tex || (int)cm->blend != s_blend) {
+    if (!s_valid || is_tex != s_tex || (int)(cm->blend & 0x1FFu) != s_blend) {
+        PROF_ENTER(PF_MODE);
         rdpq_set_mode_standard();
         rdpq_mode_persp(0); s_persp = 0; /* ligada triangulo a triangulo, so onde o w varia */
         rdpq_mode_filter(g_opt_filter && !(cm->blend & 0x100u) ? FILTER_BILINEAR : FILTER_POINT); /* 0x100 = HUD, pixel-snapped */
@@ -652,7 +779,8 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         if ((cm->blend & 0xFFu) == 1)      rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA)));
         else if ((cm->blend & 0xFFu) == 2) rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA))); /* aditivo do PC: o RDP estoura a soma (arco-iris), entao vira transparencia de 75% */
         else                     rdpq_mode_blender(0);
-        s_valid = 1; s_tex = is_tex; s_blend = (int)cm->blend;
+        s_valid = 1; s_tex = is_tex; s_blend = (int)(cm->blend & 0x1FFu);
+        PROF_LEAVE();
 
     }
     float flat_r = 1.0f, flat_g = 1.0f, flat_b = 1.0f;
@@ -660,7 +788,7 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         if (s_up_slot == slot && s_up_ver == g_slot_ver[slot]) {
             /* a mesma textura ja esta na TMEM */
         } else {
-            tex_upload_raw(slot);
+            PROF_ENTER(PF_UPLOAD); tex_upload_raw(slot); PROF_LEAVE();
             s_up_slot = slot; s_up_ver = g_slot_ver[slot];
             PROF_COUNT(PC_UPLOADS, 1);
 
@@ -673,6 +801,7 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
     }
 
     const float ts = slot >= 0 ? (float)g_c[slot].tw : 1.0f, tt = slot >= 0 ? (float)g_c[slot].th : 1.0f;
+    if ((cm->blend & BLEND_QUADS) && g_dbg == 0) { draw_quads(cm, verts, sx, sy, ts, tt, is_tex); return; }
     for (uint32_t t = 0; t + 2 < cm->count; t += 3) {
         const FVert *p = &verts[cm->first + t];
         if (is_tex == 2 && t + 5 < cm->count) {
@@ -863,9 +992,11 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
     const int IW = (int)disp->width, IH = (int)disp->height;
     const float sx = SCR_W / (float)refWidth, sy = SCR_H / 480.0f;
     g_last_sx = sx; g_last_sy = sy;
+    PROF_ENTER(PF_MODE);
     rdpq_attach(disp, NULL);
     rdpq_set_mode_fill(RGBA32(0, 0, 0, 255));
     rdpq_fill_rectangle(0, 0, IW, IH);
+    PROF_LEAVE();
 
     s_valid = 0; s_tex = -1; s_blend = -1; s_up_slot = -1; s_persp = -1;
     for (int c = 0; c < cmdCount; ) {

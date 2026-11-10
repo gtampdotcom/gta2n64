@@ -28,6 +28,8 @@ extern "C" int gta2_game_in_menu(void);
 #include <malloc.h>
 #include <stdio.h>
 extern "C" void gta2_frame_blit(int img, int l, int t, int r, int b, int x, int y); /* frame_n64.cpp: comando de blit de imagem (menu) */
+struct FrameVertex;
+extern "C" FrameVertex* gta2_frame_alloc_vertices(uint32_t texture, uint32_t blend, int n, float* hudOffsetX); /* frame_n64.cpp */
 #endif
 
 #include "gbh_graphics.hpp"
@@ -529,6 +531,10 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
     {
         blend |= 0x100; // HUD: point sampling (render_n64.c)
     }
+    if (count == 4)
+    {
+        blend |= 0x200; // a command made only of quads, 6 vertices each (render_n64.c draw_quads)
+    }
     if (gta2_n64_tex_token_empty(texId)) // textura sem nenhum pixel visivel: nao desenharia nada
     {
         return;
@@ -536,6 +542,38 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
 #else
     const u32 texId = static_cast<u32>(reinterpret_cast<intptr_t>(tex->field_1C_ptr));
 #endif
+#ifdef N64
+    // N64: the 1 or 2 triangles (corners 0,1,2 and 0,2,3) are written straight into the frame's vertex list
+    float offx;
+    FrameVertex* out = gta2_frame_alloc_vertices(texId, blend, (count - 2) * 3, &offx);
+    if (!out)
+    {
+        return;
+    }
+    const float itw = 1.0f / tw, ith = 1.0f / th;
+    static const signed char kSlot[4][2] = {{0, 3}, {1, -1}, {2, 4}, {5, -1}}; // where corner i goes in the 6 vertices
+    for (int i = 0; i < count; ++i)
+    {
+        const Vert& s = v[i];
+        const u32 d = s.diff;
+        FrameVertex& a = out[kSlot[i][0]];
+        float x = s.x - 0.5f;
+        if (offx != 0.0f)
+        {
+            x += offx;
+        }
+        a.x = x;
+        a.y = s.y - 0.5f;
+        a.w = s.w;
+        a.u = s.u * itw;
+        a.v = s.v * ith;
+        a.rgba = ((d >> 16) & 0xFF) | (d & 0xFF00) | ((d & 0xFF) << 16) | (d & 0xFF000000u);
+        if (kSlot[i][1] >= 0 && count == 4)
+        {
+            out[kSlot[i][1]] = a;
+        }
+    }
+#else
     // converts the 3 or 4 corners once (2 divides per quad instead of 12) and pushes the 1 or 2 triangles together
     static const int kFan[6] = {0, 1, 2, 0, 2, 3};
     const float itw = 1.0f / tw, ith = 1.0f / th;
@@ -554,6 +592,7 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
         tri[i] = corner[kFan[i]];
     }
     gta2_frame_push_vertices(texId, blend, tri, n);
+#endif
 }
 
 // Tiles: default UVs cover the 64x64 tile; flags rotate (0x20/0x40/0x60) and

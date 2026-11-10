@@ -15,6 +15,11 @@ int gta2_game_in_menu(void);
 void gta2_install_exception_fixups(void);
 
 #include "prof_n64.h"
+#if defined(N64_PAD) && N64_PAD > 0
+/* measurement aid: N64_PAD bytes of dead space in the code segment, to see how much a timing depends on where the code and
+ * data that follow happen to land in the (direct-mapped) caches rather than on the change being measured */
+__attribute__((used, section(".text.n64pad"))) static const unsigned char g_n64_pad[N64_PAD] = { 1 };
+#endif
 #ifdef N64_PROF
 /* ---- frame profiler (see prof_n64.h) ---- */
 #ifndef N64_BENCH_F0
@@ -24,7 +29,7 @@ void gta2_install_exception_fixups(void);
 #define N64_BENCH_F1 1100
 #endif
 #define PROF_REPORT 60
-static const char *const kPfName[PF_N] = { "logic", "draw", "present", "texconv", "wait", "audio", "hash", "x2", "x3", "x4" };
+static const char *const kPfName[PF_N] = { "logic", "draw", "present", "texconv", "wait", "audio", "hash", "p.upload", "p.tri", "p.rect", "p.mode" };
 static const char *const kPcName[PC_N] = { "ticks", "cmds", "verts", "tris", "rects", "uploads", "conv", "areaKpx", "unaligned", "fpconv" };
 static uint32_t pf_acc[PF_N], pf_tot[PF_N], pc_acc[PC_N], pc_tot[PC_N];
 static uint8_t pf_stk[16];
@@ -285,6 +290,9 @@ static void read_boot_choice(void)
 int main(void)
 {
     debug_init_isviewer();
+#if defined(N64_PAD) && N64_PAD > 0
+    { static const unsigned char *volatile keep; keep = g_n64_pad; (void)keep; } /* so the linker keeps the padding */
+#endif
     debug_init_usblog();
     display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
     console_init();

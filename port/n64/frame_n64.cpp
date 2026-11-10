@@ -15,8 +15,44 @@ static inline void gta2_js_present(const void* c, int cc, const void* v, int vc,
 
 namespace
 {
-std::vector<FrameVertex> gVerts;
-std::vector<FrameCommand> gCmds;
+// N64: the frame's draw lists have a fixed size (see ensureRoom), so they are plain arrays with the few std::vector
+// operations this file uses: an append is a copy to the end, not vector::insert's general path (several microseconds
+// per quad on the VR4300, a few hundred times per frame).
+template <class T>
+struct FrameList
+{
+    T* p = nullptr;
+    size_t n = 0, cap = 0;
+    size_t size() const { return n; }
+    size_t capacity() const { return cap; }
+    bool empty() const { return n == 0; }
+    T* data() { return p; }
+    T* begin() { return p; }
+    T* end() { return p + n; }
+    T& back() { return p[n - 1]; }
+    T& operator[](size_t i) { return p[i]; }
+    void reserve(size_t c)
+    {
+        if (!p)
+        {
+            p = static_cast<T*>(malloc(c * sizeof(T)));
+            cap = p ? c : 0;
+        }
+    }
+    void push_back(const T& v) { p[n++] = v; } // callers check ensureRoom first
+    template <class It>
+    void insert(T*, It first, It last) // only ever at end()
+    {
+        for (; first != last; ++first)
+        {
+            p[n++] = *first;
+        }
+    }
+    void clear() { n = 0; }
+    void resize(size_t k) { n = k; } // only ever shrinks
+};
+FrameList<FrameVertex> gVerts;
+FrameList<FrameCommand> gCmds;
 uint32_t gPresents = 0;
 
 // Gameplay frames are as wide as the selected view (widescreen); everything
@@ -51,7 +87,7 @@ HudCacheSlot gHudCache[4];
 // do que o vetor comporta, o vector dobra de tamanho e, sem RAM para a copia, o operator new devolve nulo e o jogo trava
 // (escrita em endereco invalido). Antes de crescer, testa se a copia maior cabe; se nao cabe, descarta o que passou do limite.
 template <class T>
-bool ensureRoom(std::vector<T>& v, size_t extra)
+bool ensureRoom(FrameList<T>& v, size_t extra)
 {
     if (v.size() + extra <= v.capacity())
     {
@@ -194,6 +230,32 @@ void gta2_frame_push_vertices(uint32_t texture, uint32_t blend, const FrameVerte
             gVerts[base + i].x += gHudOffsetX;
         }
     }
+}
+
+// Room for n vertices of one draw, appended to the current command (or a new one), for the caller to fill in place:
+// gbh_n64.cpp Draw writes its triangles straight into the list instead of building them on the stack and copying.
+// *hudOffsetX is what the caller must add to each x. NULL = no room left this frame.
+FrameVertex* gta2_frame_alloc_vertices(uint32_t texture, uint32_t blend, int n, float* hudOffsetX)
+{
+    if (!ensureRoom(gVerts, static_cast<size_t>(n)))
+    {
+        return nullptr;
+    }
+    if (gForceNewCmd || gCmds.empty() || gCmds.back().kind != 0 || gCmds.back().texture != texture || gCmds.back().blend != blend)
+    {
+        if (!ensureRoom(gCmds, 1))
+        {
+            return nullptr;
+        }
+        FrameCommand c = {0, texture, blend, static_cast<uint32_t>(gVerts.size()), 0, 0, {0, 0, 0, 0}};
+        gCmds.push_back(c);
+        gForceNewCmd = false;
+    }
+    gCmds.back().count += static_cast<uint32_t>(n);
+    FrameVertex* out = gVerts.end();
+    gVerts.n += static_cast<size_t>(n);
+    *hudOffsetX = gHudOffsetX;
+    return out;
 }
 
 // Texto com a fonte embutida da libdragon: o motor entrega a frase (ASCII, com ^00/^01 para a cor) e a posicao;
