@@ -120,6 +120,10 @@ void Start(Sample* s)
 
 void Stop(Sample* s)
 {
+    if (!s)
+    {
+        return; // the engine releases handles it never allocated (cSampleManager::Terminate)
+    }
     if (Playing(s))
     {
         gta2_js_sample_stop(Id(s));

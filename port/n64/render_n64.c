@@ -24,11 +24,16 @@
 #include <stdio.h>
 #include <string.h>
 #include "render/n64tex.h"
+#include "prof_n64.h"
 #include <rdpq_tex.h>
 #include <rdpq_text.h>
 #include <rdpq_font.h>
+extern int gta2_game_in_menu(void); /* game_entry.cpp: 1 while the front-end menu is open */
 extern const char *gta2_frame_text_pool(void); /* frame_n64.cpp: frases do quadro (comando kind 2) */
 
+/* libdragon builds with -ftrivial-auto-var-init=pattern (every local is filled before use); the scratch arrays of the
+ * per-primitive loops are fully written by the code itself, so they opt out of the extra fill. */
+#define NOINIT __attribute__((uninitialized))
 typedef struct { float x, y, w, u, v; uint32_t rgba; } FVert;                              /* = FrameVertex (render/frame.h) */
 typedef struct { uint32_t kind, texture, blend, first, count, colour; int32_t rect[4]; } FCmd; /* = FrameCommand */
 
@@ -36,7 +41,7 @@ typedef struct { uint32_t kind, texture, blend, first, count, colour; int32_t re
 #define SLOT_U16    2048          /* 4096 bytes por entrada = TMEM inteira em RGBA16 */
 #define MAX_TEXELS  2048
 
-typedef struct { const N64Tex *owner; uint16_t gen, tw, th, pw; uint32_t used; float req; uint8_t empty, add; } CEnt; /* empty = nenhum texel visivel */ /* used = g_frames+1 do ultimo uso (0 = nunca); req = escala pedida na conversao */
+typedef struct { const N64Tex *owner; uint16_t gen, tw, th, pw; uint32_t used; float req, reqy; uint8_t empty, add; } CEnt; /* reqy > 0: converted per axis (req = x scale, reqy = y scale) for 2D */ /* empty = nenhum texel visivel */ /* used = g_frames+1 do ultimo uso (0 = nunca); req = escala pedida na conversao */
 #define SCALE_MIN   0.25f  /* menor reducao aceita por escala de tela */
 #define SCALE_UP    1.25f  /* reconverte (maior) se a textura passar a aparecer 25% maior na tela */
 #define CACHE_GUARD 3  /* quadros que um slot fica protegido apos o uso: o RDP le a textura depois, de forma assincrona */
@@ -46,60 +51,24 @@ static int g_next;
 static int g_active;
 static uint32_t g_frames;
 
-/* Blocos de upload por slot (ver N64_UPLOAD_BLOCKS mais abaixo). Liberacao ADIADA: um bloco ja pode estar na fila do RSP/RDP, entao
- * ele so e liberado 4 quadros depois de largado (ou apos rspq_wait se a lista encher). Chamado ao reconverter o slot e quando a textura
- * dona e' esquecida (troca de fase), para nao deixar centenas de blocos pequenos espalhados pelo heap (fragmentacao). */
-#define UBLK_PEND_N 64
-static rspq_block_t *g_ublk_pend[UBLK_PEND_N];
-static uint32_t g_ublk_pend_f[UBLK_PEND_N];
-static int g_ublk_npend;
-static rspq_block_t *g_ublk[CACHE_N];
-static uint8_t g_ublk_n[CACHE_N];
-static int g_ublk_live;
-static void ublk_release(int slot)
-{
-    rspq_block_t *b = g_ublk[slot];
-    g_ublk_n[slot] = 0;
-    if (!b) return;
-    g_ublk[slot] = NULL;
-    --g_ublk_live;
-    if (g_ublk_npend >= UBLK_PEND_N) {
-        rspq_wait();
-        for (int i = 0; i < g_ublk_npend; ++i) rspq_block_free(g_ublk_pend[i]);
-        g_ublk_npend = 0;
-    }
-    g_ublk_pend[g_ublk_npend] = b;
-    g_ublk_pend_f[g_ublk_npend] = g_frames;
-    ++g_ublk_npend;
-}
 /* 1 se ha memoria folgada para gravar um bloco (o rdpq aborta o jogo com 'Out of memory' se faltar no meio da gravacao) */
 /* RESERVA para o motor: os blocos de upload/texto sao so cache de velocidade e nao podem comer a folga que o jogo precisa para alocar
  * em tempo de execucao (texturas sob demanda, scripts, sons): sem isso o heap enchia aos poucos e o motor abortava com 'Out of memory'. */
 #ifndef N64_HEAP_RESERVE_KB
-#define N64_HEAP_RESERVE_KB 320
+#define N64_HEAP_RESERVE_KB 200 /* was 320 while every texture slot could also hold a recorded upload block; only the few text blocks are left */
 #endif
-#define UBLK_MAX_LIVE 128 /* blocos de upload vivos ao mesmo tempo (~2,4 KB cada) */
 extern char *__heap_top;
 static int heap_has_room(void)
 {
+#ifdef N64_NO_TEXT_BLOCKS
+    return 0; /* test builds: never record RSP blocks, so every primitive goes through the direct path */
+#endif
     if ((long)(__heap_top - (char *)sbrk(0)) < (long)N64_HEAP_RESERVE_KB * 1024) return 0; /* a folga ainda nao pedida ao sistema (apos o fim do heap atual) */
     void *p = malloc(24 * 1024);
     if (!p) return 0;
     free(p);
     return 1;
 }
-static void ublk_reap(void)
-{
-    for (int i = 0; i < g_ublk_npend; ) {
-        if ((uint32_t)(g_frames - g_ublk_pend_f[i]) >= 4u) {
-            rspq_block_free(g_ublk_pend[i]);
-            --g_ublk_npend;
-            g_ublk_pend[i] = g_ublk_pend[g_ublk_npend];
-            g_ublk_pend_f[i] = g_ublk_pend_f[g_ublk_npend];
-        } else ++i;
-    }
-}
-
 /* opcoes do laboratorio */
 static int g_opt_filter = 1;
 static int g_opt_persp = 1;                    /* perspectiva SEMPRE ligada em tudo (modo 1); nao ha mais como alterar */
@@ -120,7 +89,7 @@ void gta2_n64_render_toggle(int which)
 
 void gta2_n64_tex_forget(const N64Tex *t)
 {
-    if (t && t->slot >= 0 && t->slot < CACHE_N && g_c[t->slot].owner == t) { g_c[t->slot].owner = 0; ublk_release(t->slot); }
+    if (t && t->slot >= 0 && t->slot < CACHE_N && g_c[t->slot].owner == t) { g_c[t->slot].owner = 0; }
 }
 
 /* devolve a entrada do cache para a textura (convertendo se preciso); -1 se nao ha dados */
@@ -197,12 +166,6 @@ static int g_palc_next;
 /* additive: textura desenhada com mistura aditiva no PC. No N64 ela vira transparencia comum (o RDP estoura a soma),
  * entao os pixels quase pretos -- que na soma nao apareciam -- viram transparentes na conversao. */
 #define ADD_CUT 48u /* r+g+b abaixo disto = "preto" de textura aditiva */
-/* UPLOAD EM BLOCO: o upload de cada slot (rdpq_tex_upload, ~40 us de CPU cada, ~130 por quadro) e' gravado uma vez num bloco do RSP
- * e depois so' executado (1 comando). Grava na 2a vez que o slot e' usado com o mesmo conteudo; o bloco e' liberado quando o slot e'
- * reconvertido (o slot so' e' reaproveitado apos CACHE_GUARD quadros sem uso, entao o RDP ja nao o executa). 0 = desliga (volta ao antigo). */
-#ifndef N64_UPLOAD_BLOCKS
-#define N64_UPLOAD_BLOCKS 1
-#endif
 static int s_rec;                                /* 1 enquanto grava um bloco maior (texto estatico): nao se aninha gravacao */
 static uint32_t g_slot_ver[CACHE_N];            /* sobe a cada conversao: identifica o conteudo atual do slot (para pular o upload) */
 extern const uint32_t *gta2_n64_palette_ptr(int id);
@@ -222,7 +185,17 @@ void gta2_n64_render_prealloc(void)
     }
 }
 
-static int tex_slot(N64Tex *t, float scale, int additive)
+/* Hot and cold code are kept in separate functions on purpose: the instruction cache is 16 KB, direct mapped, and the
+ * functions that run for every draw are linked next to each other (port/n64/hot_order.txt). A rarely taken branch
+ * inlined into one of them would only push the others out of the cache. */
+#define COLD_FN __attribute__((noinline, cold))
+static int tex_convert(N64Tex *t, float scale, float scale_y, int additive);
+/* scale_y <= 0: one scale for both axes, and a copy converted for a bigger size is good enough (world sprites, tiles).
+ * scale_y > 0: HUD and menu art (fonts above all). The framebuffer is 640x240, so 2D drawn for 640x480 keeps its width and
+ * loses half its height; one averaged scale made the copy too narrow and too tall, and drawing it stretched one way and
+ * squeezed the other with point sampling dropped rows of the letters. Here the copy is filtered per axis to the size it
+ * covers on screen, so it is drawn texel for pixel; it is reused only for (nearly) the same size. */
+static int tex_slot(N64Tex *t, float scale, float scale_y, int additive)
 {
     if (!t) return texfail(t, 0);
     if (t->palid >= 0) { /* a paleta pode ter sido registrada (ou trocada) depois da textura */
@@ -238,7 +211,10 @@ static int tex_slot(N64Tex *t, float scale, int additive)
     if (t->slot >= 0 && g_c[t->slot].owner == t && g_c[t->slot].gen == t->gen && g_c[t->slot].add != (uint8_t)additive)
         g_c[t->slot].owner = 0; /* mesma textura pedida no outro modo (aditivo x normal): reconverte */
     if (t->slot >= 0 && g_c[t->slot].owner == t && g_c[t->slot].gen == t->gen) {
-        if (scale <= g_c[t->slot].req * SCALE_UP) { g_c[t->slot].used = g_frames + 1; return t->slot; }
+        const CEnt *const e = &g_c[t->slot];
+        const int ok = scale_y > 0.0f ? (e->reqy > 0.0f && fabsf(scale - e->req) <= 0.02f * e->req && fabsf(scale_y - e->reqy) <= 0.02f * e->reqy)
+                                      : (e->reqy <= 0.0f && scale <= e->req * SCALE_UP);
+        if (ok) { g_c[t->slot].used = g_frames + 1; return t->slot; }
         g_c[t->slot].owner = 0; /* aparece maior que na conversao: reconverte com mais resolucao (so cresce) */
     }
     if (!g_cbuf) {
@@ -246,12 +222,22 @@ static int tex_slot(N64Tex *t, float scale, int additive)
         if (!g_cbuf) return -1;
         memset(g_c, 0, sizeof(g_c));
     }
+    return tex_convert(t, scale, scale_y, additive);
+}
+
+/* converts the texture into a cache slot (the slow part of tex_slot: only when a texture is new or shown bigger) */
+static __attribute__((noinline)) int tex_convert(N64Tex *t, float scale, float scale_y, int additive)
+{
+    PROF_ENTER(PF_TEXCONV); PROF_COUNT(PC_CONV, 1);
     const int w = t->w, h = t->h;
     int tw = w, th = h;
+    const float scy = scale_y > 0.0f ? scale_y : scale;
     if (scale < 0.95f) { /* reduz para o tamanho na tela (sprites: ~metade; blocos: ~44 de 64) */
         tw = (int)((float)w * scale + 0.5f);
-        th = (int)((float)h * scale + 0.5f);
         if (tw < 1) tw = 1;
+    }
+    if (scy < 0.95f) {
+        th = (int)((float)h * scy + 0.5f);
         if (th < 1) th = 1;
     }
     if (tw * th > MAX_TEXELS) { /* limite da TMEM (4 KB em RGBA16) */
@@ -278,14 +264,14 @@ static int tex_slot(N64Tex *t, float scale, int additive)
             const int s = (g_next + i) % CACHE_N;
             if (g_c[s].used != g_frames + 1) { slot = s; break; }
         }
-        if (slot < 0) { return -1; } /* cache cheio so com texturas deste quadro: desenha sem textura */
+        if (slot < 0) { PROF_LEAVE(); return -1; } /* cache cheio so com texturas deste quadro: desenha sem textura */
 
         rspq_wait();
     }
     g_next = (slot + 1) % CACHE_N;
     uint16_t *dst = g_cbuf + (size_t)slot * SLOT_U16;
 
-    uint32_t prgb_ram[256];
+    NOINIT uint32_t prgb_ram[256];
     const uint32_t *prgb;
     const uint32_t *pal = t->pal;
     if (in_rom(pal)) {
@@ -304,12 +290,12 @@ static int tex_slot(N64Tex *t, float scale, int additive)
         prgb = prgb_ram;
     }
     const uint8_t *src = src_pixels(t, w, h);
-    uint16_t xs[260];
+    NOINIT uint16_t xs[260];
     for (int x = 0; x <= tw; ++x) xs[x] = (uint16_t)(x * w / tw);
 
     int any_clear = 0, any_opaque = 0;
     if (tw == w && th == h) { /* sem reducao: cada texel e' so uma consulta numa tabela de 256 entradas (resultado identico ao caminho geral) */
-        uint16_t p16[256];
+        NOINIT uint16_t p16[256];
         p16[0] = 0;
         for (int i = 1; i < 256; ++i) {
             const uint32_t c = prgb[i];
@@ -388,13 +374,14 @@ conv_done_loop:
     }
     data_cache_hit_writeback(dst, (unsigned long)pw * th * 2);
     ++g_slot_ver[slot];
-    ublk_release(slot);
     g_c[slot].owner = t; g_c[slot].gen = t->gen; g_c[slot].tw = (uint16_t)tw; g_c[slot].th = (uint16_t)th; g_c[slot].pw = (uint16_t)pw;
     g_c[slot].used = g_frames + 1;
     g_c[slot].req = scale;
+    g_c[slot].reqy = scale_y;
     g_c[slot].empty = (uint8_t)!any_opaque;
     g_c[slot].add = (uint8_t)additive;
     t->slot = (int16_t)slot;
+    PROF_LEAVE();
     return slot;
 }
 
@@ -446,7 +433,22 @@ uint32_t gta2_n64_tex_capture(N64Tex *t, float a_scr, float a_tex, int additive)
         if (scale > 1.0f) scale = 1.0f;
         if (scale < SCALE_MIN) scale = SCALE_MIN;
     }
-    const int slot = tex_slot(t, scale, additive);
+    const int slot = tex_slot(t, scale, 0.0f, additive);
+    return slot < 0 ? 0u : TEX_TOKEN_BASE + (uint32_t)slot;
+}
+/* framebuffer pixels per unit of the 640x480 reference space (gbh_n64.cpp snaps 2D art to whole pixels with it) */
+void gta2_n64_fb_scale(float *sx, float *sy) { *sx = g_last_sx; *sy = g_last_sy; }
+/* 2D art (HUD, menus): kx, ky = pixels of the 640x480 reference space per texel along each axis (gbh_n64.cpp Draw) */
+uint32_t gta2_n64_tex_capture_xy(N64Tex *t, float kx, float ky, int additive)
+{
+    if (!t) return 0;
+    float fx = kx * g_last_sx, fy = ky * g_last_sy;
+    if (!(fx > 0.0f) || !(fy > 0.0f)) return gta2_n64_tex_capture(t, 0.0f, 0.0f, additive);
+    if (fx > 1.0f) fx = 1.0f;
+    if (fy > 1.0f) fy = 1.0f;
+    if (fx < SCALE_MIN) fx = SCALE_MIN;
+    if (fy < SCALE_MIN) fy = SCALE_MIN;
+    const int slot = tex_slot(t, fx, fy, additive);
     return slot < 0 ? 0u : TEX_TOKEN_BASE + (uint32_t)slot;
 }
 
@@ -473,9 +475,61 @@ __attribute__((unused)) static void nfont_init(void)
 
 int gta2_n64_nfont_ready(void) { return g_nfont != NULL; }
 
+/* A small 5x7 pixel font drawn with filled rectangles (one per run of pixels): the menu's version / credit lines (text starting with
+ * "^02"; a newline starts the next line). Everything of the block goes out in ONE call. */
+static const struct { char c; uint8_t rows[7]; } k5x7[] = {
+    {'0', {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}}, {'1', {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}},
+    {'2', {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}}, {'3', {0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E}},
+    {'4', {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}}, {'5', {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}},
+    {'6', {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}}, {'7', {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}},
+    {'8', {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}}, {'9', {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}},
+    {'.', {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C}}, {'A', {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
+    {'G', {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F}}, {'T', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
+    {'V', {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}}, {'N', {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}},
+    {'P', {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}}, {'O', {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
+    {'R', {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}}, {'B', {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E}},
+    {'Y', {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04}}, {'M', {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}},
+};
+
+static void pixfont_draw(const char *s, int n, float x, float y, float sx, float sy)
+{
+    int pw = (int)(2.0f * sx + 0.5f); if (pw < 2) pw = 2;   /* one font pixel = 2 framebuffer pixels wide (a wide font like the menu's) */
+    int ph = (int)(2.0f * sy + 0.5f); if (ph < 1) ph = 1;   /* and 2 layout rows tall: in 640x480 interlaced a 1-row detail shows in only one of the two fields */
+    const int px0 = (int)(x + 0.5f);
+    int py = (int)(y + 0.5f); py &= ~1;
+    int px = px0;
+    rdpq_set_mode_fill(RGBA32(255, 255, 255, 255));
+    for (int i = 0; i < n; ++i) {
+        const char ch = s[i];
+        if (ch == '\n') { px = px0; py += 9 * ph; continue; }
+        const int dot = ch == '.';                           /* the dot sits in the middle of a 5-wide cell: pull it in so it has a gap of 1 pixel on each side */
+        const int gx = dot ? px - pw : px;
+        for (unsigned k = 0; k < sizeof(k5x7) / sizeof(k5x7[0]); ++k) {
+            if (k5x7[k].c != ch) continue;
+            for (int r = 0; r < 7; ++r) {
+                int c = 0;
+                while (c < 5) {
+                    if (!(k5x7[k].rows[r] & (0x10 >> c))) { ++c; continue; }
+                    int e = c;
+                    while (e < 5 && (k5x7[k].rows[r] & (0x10 >> e))) ++e;
+                    rdpq_fill_rectangle(gx + c * pw, py + r * ph, gx + e * pw, py + (r + 1) * ph);
+                    c = e;
+                }
+            }
+            break;
+        }
+        px += (dot ? 3 : 6) * pw;
+    }
+}
+
 /* kind 2: frase em ASCII (com ^00/^01), posicao do topo do bloco em 640x480, altura de linha do GTA 2 em 640x480 */
 static void nfont_draw(const FCmd *cm, float sx, float sy)
 {
+    if (cm->count > 3 && gta2_frame_text_pool()[cm->first] == '^' && gta2_frame_text_pool()[cm->first + 1] == '0' && gta2_frame_text_pool()[cm->first + 2] == '2') {
+        pixfont_draw(gta2_frame_text_pool() + cm->first + 3, (int)cm->count - 3, (float)cm->rect[0] * (1.0f / 256.0f) * sx,
+                     ((float)cm->rect[1] * (1.0f / 256.0f) + 4.0f) * sy, sx, sy);
+        return;
+    }
     if (!g_nfont || cm->count == 0) return;
     if (g_nf_lh <= 0.0f) {
         rdpq_font_gmetrics_t ga, gg;
@@ -509,38 +563,51 @@ uint32_t gta2_n64_frames(void) { return g_frames; }
 
 static inline double ticks_ms(uint64_t t) { return (double)t * 1000.0 / (double)TICKS_PER_SECOND; }
 
+#ifdef N64_PROF
+static float g_prof_area; /* framebuffer pixels covered by everything drawn this frame (overdraw measure) */
+#endif
 static int s_persp = -1; /* perspectiva do RDP no momento (-1 = desconhecida): ligada so nos triangulos que precisam; retangulo de textura exige desligada */
 
 /* 6 vertices consecutivos (2 triangulos) que formam um retangulo alinhado aos eixos, sem rotacao nem perspectiva e com a
  * textura sem espelhar: desenha com UM comando rdpq_texture_rectangle em vez de 2 rdpq_triangle (texto, HUD, rostos, placas).
  * Retorna 1 se tratou os 6 vertices (desenhou ou descartou por estar fora da tela), 0 se nao e' um retangulo (use triangulos). */
+static int try_texrect_n(const FVert *const *c, int n, float sx, float sy, float ts, float tt);
 static int try_texrect(const FVert *p, float sx, float sy, float ts, float tt)
 {
-    float X[6], Y[6], minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f, wmin = 1e30f, wmax = 0.0f;
-    for (int i = 0; i < 6; ++i) {
-        X[i] = p[i].x * sx; Y[i] = p[i].y * sy;
+    const FVert *const c[6] = { &p[0], &p[1], &p[2], &p[3], &p[4], &p[5] };
+    return try_texrect_n(c, 6, sx, sy, ts, tt);
+}
+/* the same test on a list of corners: 6 = two loose triangles, 4 = the corners of a quad (see draw_quads) */
+static int try_texrect_n(const FVert *const *c, int n, float sx, float sy, float ts, float tt)
+{
+    NOINIT float X[6], Y[6];
+    float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f, wmin = 1e30f, wmax = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        const FVert *const p = c[i];
+        X[i] = p->x * sx; Y[i] = p->y * sy;
         if (!(X[i] > -1500.0f && X[i] < 1500.0f && Y[i] > -1500.0f && Y[i] < 1500.0f)) return 0;
         if (X[i] < minx) minx = X[i];
         if (X[i] > maxx) maxx = X[i];
         if (Y[i] < miny) miny = Y[i];
         if (Y[i] > maxy) maxy = Y[i];
-        if (p[i].w > wmax) wmax = p[i].w;
-        if (p[i].w < wmin) wmin = p[i].w;
+        if (p->w > wmax) wmax = p->w;
+        if (p->w < wmin) wmin = p->w;
     }
     if (maxx - minx < 0.25f || maxy - miny < 0.25f) return 0;
     if (wmin > 0.0f && wmax < 1e20f && wmax > wmin * 1.001f) return 0; /* perspectiva de verdade: so triangulos */
     const float ex = 0.02f;
-    float cu[4] = {0}, cv[4] = {0};
+    NOINIT float cu[4], cv[4]; /* all four are written before use: seen == 15 */
     int seen = 0;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < n; ++i) {
+        const FVert *const p = c[i];
         int col, row;
         if (fabsf(X[i] - minx) < ex) col = 0; else if (fabsf(X[i] - maxx) < ex) col = 1; else return 0;
         if (fabsf(Y[i] - miny) < ex) row = 0; else if (fabsf(Y[i] - maxy) < ex) row = 1; else return 0;
-        const int c = col + 2 * row; /* 0 = topo-esq, 1 = topo-dir, 2 = base-esq, 3 = base-dir */
-        if (seen & (1 << c)) {
-            if (fabsf(cu[c] - p[i].u) > 0.002f || fabsf(cv[c] - p[i].v) > 0.002f) return 0;
+        const int k = col + 2 * row; /* 0 = topo-esq, 1 = topo-dir, 2 = base-esq, 3 = base-dir */
+        if (seen & (1 << k)) {
+            if (fabsf(cu[k] - p->u) > 0.002f || fabsf(cv[k] - p->v) > 0.002f) return 0;
         } else {
-            cu[c] = p[i].u; cv[c] = p[i].v; seen |= 1 << c;
+            cu[k] = p->u; cv[k] = p->v; seen |= 1 << k;
         }
     }
     if (seen != 15) return 0;
@@ -557,9 +624,47 @@ static int try_texrect(const FVert *p, float sx, float sy, float ts, float tt)
     if (y1 > SCR_H) { t1 -= (y1 - SCR_H) * dtdy; y1 = SCR_H; }
     if (x1 - x0 < 0.25f || y1 - y0 < 0.25f) { return 1; }
     if (s_persp != 0) { rdpq_mode_persp(0); s_persp = 0; } /* retangulo + perspectiva ligada saia chapado */
+    PROF_ENTER(PF_RECT);
     rdpq_texture_rectangle_scaled(TILE0, x0, y0, x1, y1, s0, t0, s1, t1);
+    PROF_LEAVE();
+    PROF_COUNT(PC_RECTS, 1);
+#ifdef N64_PROF
+    g_prof_area += (x1 - x0) * (y1 - y0);
+#endif
 
     return 1;
+}
+
+/* What this file last set in the RDP's tile descriptors (0 = unknown: something else drew, or a new frame): consecutive
+ * uploads of textures of the same size (most map tiles) then send 2 commands instead of 5. */
+static int s_tile_known;         /* bit 0: TILE1 is the LOAD_BLOCK tile; bit 1: s_tile_pitch / s_tile_size are valid */
+static int s_tile_pitch, s_tile_size;
+/* Texture upload with the RDP commands written directly. This is the exact sequence rdpq_tex_upload(TILE0, surface, NULL)
+ * emits for an RGBA16 surface (same tiles, same LOAD_BLOCK / LOAD_TILE choice), without its per-call set-up: that set-up was
+ * ~40 us of CPU, about 120 times per frame. (The earlier answer to that cost, one recorded RSP block per cache slot, needed
+ * 320 KB of spare heap and so was switched off most of the time; it is gone.)
+ * LOAD_BLOCK's dxt is 1.11 fixed point, so each width only loads so many lines exactly: same table as libdragon (rdpq_tex.c). */
+static const uint8_t kBlockMaxLines[] = { 20, 42, 26, 14, 19, 32, 13, 28, 26, 8, 9, 4, 4, 5, 20, 13, 18, 3, 6, 3, 2, 16, 2, 2, 3, 14, 2,
+                                          13, 2, 1, 12, 4, 2, 2, 2, 2, 2, 2, 4, 10, 0, 1, 2, 9, 0, 1, 8, 0, 2, 0, 1, 0, 1, 8 };
+static void tex_upload_raw(int slot)
+{
+    const CEnt *e = &g_c[slot];
+    const int pw = e->pw, th = e->th, pitch = pw * 2; /* pw is a multiple of 4: the pitch is a multiple of 8 bytes */
+    const int words = pw >> 2;                        /* 64-bit words per line */
+    const int max_lines = words < 11 ? 4096 : (words - 11 < (int)sizeof(kBlockMaxLines) ? kBlockMaxLines[words - 11] : 0);
+    rdpq_set_texture_image_raw(0, PhysicalAddr(g_cbuf + (size_t)slot * SLOT_U16), FMT_RGBA16, (uint16_t)pw, (uint16_t)th);
+    const int same_pitch = (s_tile_known & 2) && s_tile_pitch == pitch;
+    if (!same_pitch) rdpq_set_tile(TILE0, FMT_RGBA16, 0, (uint16_t)pitch, NULL);
+    if (th <= max_lines) {
+        if (!(s_tile_known & 1)) rdpq_set_tile(TILE1, FMT_RGBA16, 0, 0, NULL);
+        rdpq_load_block(TILE1, 0, 0, (uint16_t)(pw * th), (uint16_t)pitch);
+        if (!same_pitch || s_tile_size != ((pw << 16) | th)) rdpq_set_tile_size_fx(TILE0, 0, 0, (uint16_t)(pw * 4), (uint16_t)(th * 4));
+        s_tile_known |= 1;
+    } else { /* LOAD_TILE writes TILE0's size itself, so it is always set again afterwards */
+        rdpq_load_tile_fx(TILE0, 0, 0, (uint16_t)(pw * 4), (uint16_t)(th * 4));
+        rdpq_set_tile_size_fx(TILE0, 0, 0, (uint16_t)(pw * 4), (uint16_t)(th * 4));
+    }
+    s_tile_known |= 2; s_tile_pitch = pitch; s_tile_size = (pw << 16) | th;
 }
 
 /* ---- desenho de um comando (usado direto e dentro de blocos gravados do RSP) ---- */
@@ -570,33 +675,151 @@ static int s_up_slot = -1; static uint32_t s_up_ver; /* textura que ja esta na T
 
 /* kind 3: imagem do menu (gbh_BlitImage). A copia reduzida na metade (RGBA5551, RAM) vem de gbh_n64.cpp; rdpq_tex_blit divide em
  * pedacos que cabem na TMEM. Origem em pixels da imagem inteira (cm->rect), destino (cm->first, cm->count) no espaco 640x480. */
-extern const uint16_t *gta2_n64_image_get(int idx, int *w, int *h);
+extern const uint16_t *gta2_n64_image_get(int idx, int *stw, int *sth, int *lw, int *lh);
 static void blit_img(const FCmd *cm, float sx, float sy)
 {
-    int hw = 0, hh = 0;
-    const uint16_t *px = gta2_n64_image_get((int)cm->texture, &hw, &hh);
-    if (!px || hw <= 0 || hh <= 0) return;
+    int stw = 0, sth = 0, lw = 0, lh = 0; /* stored size, and the size the game lays the image out in (640x480 space) */
+    const uint16_t *px = gta2_n64_image_get((int)cm->texture, &stw, &sth, &lw, &lh);
+    if (!px || stw <= 0 || sth <= 0 || lw <= 0 || lh <= 0) return;
     const int l = cm->rect[0], t = cm->rect[1], r = cm->rect[2], b = cm->rect[3];
     if (r <= l || b <= t) return;
-    const int s0 = l / 2, t0 = t / 2;
-    int sw = (r - l + 1) / 2, sh = (b - t + 1) / 2;
-    if (s0 + sw > hw) sw = hw - s0;
-    if (t0 + sh > hh) sh = hh - t0;
+    /* the source rectangle, from layout pixels to stored pixels (the build stores the image at framebuffer size, so on the
+       640x240 framebuffer this ends up 1:1: nothing is scaled when drawing) */
+    const int s0 = l * stw / lw, t0 = t * sth / lh;
+    int sw = ((r - l) * stw + lw / 2) / lw, sh = ((b - t) * sth + lh / 2) / lh;
+    if (s0 + sw > stw) sw = stw - s0;
+    if (t0 + sh > sth) sh = sth - t0;
     if (sw <= 0 || sh <= 0) return;
-    surface_t surf = surface_make((void *)px, FMT_RGBA16, (uint16_t)hw, (uint16_t)hh, (uint16_t)(hw * 2));
+    surface_t surf = surface_make((void *)px, FMT_RGBA16, (uint16_t)stw, (uint16_t)sth, (uint16_t)(stw * 2));
+    const float kx = (float)(r - l) * sx / (float)sw, ky = (float)(b - t) * sy / (float)sh;
+    const int exact = kx > 0.999f && kx < 1.001f && ky > 0.999f && ky < 1.001f;
     rdpq_set_mode_standard();
-    rdpq_mode_filter(FILTER_BILINEAR);
+    rdpq_mode_filter(exact ? FILTER_POINT : FILTER_BILINEAR);
     rdpq_mode_combiner(RDPQ_COMBINER_TEX);
     rdpq_blitparms_t bp;
     memset(&bp, 0, sizeof(bp));
     bp.s0 = s0; bp.t0 = t0; bp.width = sw; bp.height = sh;
-    bp.scale_x = (float)(r - l) * sx / (float)sw;
-    bp.scale_y = (float)(b - t) * sy / (float)sh;
-    bp.filtering = true;
+    if (!exact) { bp.scale_x = kx; bp.scale_y = ky; bp.filtering = true; }
     rdpq_tex_blit(&surf, (float)(int32_t)cm->first * sx, (float)(int32_t)cm->count * sy, &bp);
 }
 
-static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int IW, int IH)
+/* ---- quads ----
+ * gbh_n64.cpp marks commands made only of quads (blend bit 0x200): every 4 vertices are the corners of one quad, drawn as
+ * triangles 0,1,2 and 0,2,3. The rectangle test looks at 4 corners instead of 6 vertices, and each corner is converted once
+ * instead of once per triangle. (The render lab's flat-colour modes do not apply to quads.) The tests and the arithmetic per triangle are the ones of the general loop in draw_cmd, so the
+ * picture is the same pixel for pixel. */
+#define BLEND_QUADS 0x200u
+/* Triangles go to the RSP as libdragon's rdpq_triangle() sends them (3 x TRIANGLE_DATA + TRIANGLE), but the words are built
+ * here from the frame vertex: rdpq_triangle() takes floats, so every colour byte went byte -> float -> byte, and it calls
+ * floorf()/floor() from libm for each coordinate: ~37 us per triangle, the largest single cost of presenting a frame.
+ * The values written are the same ones, bit for bit (kCol8 reproduces the float round trip of the colour bytes).
+ * N64_FAST_TRI=0 goes back to rdpq_triangle() (if a future libdragon changes these RSP commands). */
+#ifndef N64_FAST_TRI
+#define N64_FAST_TRI 1
+#endif
+typedef struct { float x, y, w, s, t; uint32_t rgba_f; uint32_t xy, rgba, st; } QVert;
+static uint8_t kCol8[256];
+static int kCol8_ok;
+static inline int32_t floor_i32(float f) { int32_t i = (int32_t)f; if ((float)i > f) --i; return i; }
+static inline int32_t fx16_16(float f) /* = float_to_s16_16 of rdpq_tri.c */
+{
+    if (f >= 32768.f) return 0x7FFFFFFF;
+    if (f < -32768.f) return (int32_t)0x80000000;
+    return floor_i32(f * 65536.f);
+}
+extern void __rdpq_autosync_use(uint32_t res);
+static void quad_tri(const QVert *a, const QVert *b, const QVert *c, int is_tex, uint32_t bmode)
+{
+    const QVert *const q[3] = { a, b, c };
+    float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f, wmax = 0.0f, wmin = 1e30f;
+    for (int k = 0; k < 3; ++k) {
+        const float x = q[k]->x, y = q[k]->y, w = q[k]->w;
+        if (!(x > -1500.0f && x < 1500.0f && y > -1500.0f && y < 1500.0f)) return;
+        if (x < minx) minx = x;
+        if (x > maxx) maxx = x;
+        if (y < miny) miny = y;
+        if (y > maxy) maxy = y;
+        if (w > wmax) wmax = w;
+        if (w < wmin) wmin = w;
+    }
+    if (maxx < 0 || minx > SCR_W || maxy < 0 || miny > SCR_H) return;
+    const int persp_ok = wmin > 0.0f && wmax < 1e20f;
+    const float inv_wmax = persp_ok ? 1.0f / wmax : 0.0f;
+    if (is_tex) {
+        const int want = (persp_ok && wmax / wmin > 1.001f) ? 1 : 0;
+        if (want != s_persp) { PROF_ENTER(PF_MODE); rdpq_mode_persp(want != 0); s_persp = want; PROF_LEAVE(); }
+    }
+    PROF_COUNT(PC_TRIS, 1);
+#ifdef N64_PROF
+    g_prof_area += 0.5f * fabsf((b->x - a->x) * (c->y - a->y) - (c->x - a->x) * (b->y - a->y));
+#endif
+    PROF_ENTER(PF_TRI);
+#if N64_FAST_TRI
+    __rdpq_autosync_use(is_tex ? (AUTOSYNC_PIPE | AUTOSYNC_TILE(0) | AUTOSYNC_TMEM(0)) : AUTOSYNC_PIPE);
+    for (int k = 0; k < 3; ++k) {
+        int32_t w = 0, inv_w = 0;
+        if (is_tex) {
+            const float iw = persp_ok ? q[k]->w * inv_wmax : 1.0f;
+            w = fx16_16(1.0f / iw);
+            inv_w = fx16_16(iw);
+        }
+        rspq_write(RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE_DATA, 32 * k, q[k]->xy, 0, is_tex == 2 ? 0u : q[k]->rgba, is_tex ? q[k]->st : 0u, w, inv_w);
+    }
+    {   /* RDP words the RSP will generate: 4 for the edges, + 8 with shade, + 8 with texture */
+        const uint32_t cmd_id = RDPQ_CMD_TRI | (is_tex != 2 ? 0x4u : 0u) | (is_tex ? 0x2u : 0u);
+        const int rdp_words = 4 + (is_tex != 2 ? 8 : 0) + (is_tex ? 8 : 0);
+        rdpq_write(rdp_words, RDPQ_OVL_ID, RDPQ_CMD_TRIANGLE, 0xC000 | (cmd_id << 8));
+    }
+#else
+    {
+        float v[3][9];
+        const float k255 = 1.0f / 255.0f;
+        for (int k = 0; k < 3; ++k) {
+            const uint32_t d = q[k]->rgba_f;
+            v[k][0] = q[k]->x; v[k][1] = q[k]->y;
+            v[k][2] = (float)(d & 0xFF) * k255; v[k][3] = (float)((d >> 8) & 0xFF) * k255; v[k][4] = (float)((d >> 16) & 0xFF) * k255;
+            v[k][5] = bmode == 0 ? 1.0f : bmode == 2 ? 0.75f : (float)(d >> 24) * k255;
+            v[k][6] = q[k]->s; v[k][7] = q[k]->t; v[k][8] = persp_ok ? q[k]->w * inv_wmax : 1.0f;
+        }
+        rdpq_triangle(is_tex == 2 ? &kFmtTexOnly : is_tex ? &kFmtTex : &TRIFMT_SHADE, v[0], v[1], v[2]);
+    }
+#endif
+    (void)bmode;
+    PROF_LEAVE();
+}
+static void draw_quads(const FCmd *cm, const FVert *verts, float sx, float sy, float ts, float tt, int is_tex)
+{
+    const uint32_t bmode = cm->blend & 0xFFu;
+    if (!kCol8_ok) { /* what rdpq_triangle() makes of a colour byte: (uint32_t)((byte / 255) * 255) in single precision */
+        const float k255 = 1.0f / 255.0f;
+        for (int i = 0; i < 256; ++i) kCol8[i] = (uint8_t)(uint32_t)(((float)i * k255) * 255.0f);
+        kCol8_ok = 1;
+    }
+    for (uint32_t t = 0; t + 4 <= cm->count; t += 4) {
+        const FVert *const p = &verts[cm->first + t];
+        const FVert *const c[4] = { &p[0], &p[1], &p[2], &p[3] };
+        if (is_tex == 2 && try_texrect_n(c, 4, sx, sy, ts, tt)) continue;
+        NOINIT QVert q[4];
+        for (int k = 0; k < 4; ++k) {
+            const FVert *const v = c[k];
+            const float x = v->x * sx, y = v->y * sy;
+            q[k].x = x; q[k].y = y; q[k].w = v->w;
+            q[k].s = v->u * ts; q[k].t = v->v * tt;
+            q[k].rgba_f = v->rgba;
+            if (!(x > -1500.0f && x < 1500.0f && y > -1500.0f && y < 1500.0f)) continue; /* its triangles are skipped: no fixed-point words needed */
+            q[k].xy = ((uint32_t)floor_i32(x * 4.0f) << 16) | ((uint32_t)floor_i32(y * 4.0f) & 0xFFFFu);
+            const uint32_t d = v->rgba; /* r | g << 8 | b << 16 | a << 24 */
+            const uint32_t al = bmode == 0 ? 255u : bmode == 2 ? 191u : kCol8[d >> 24];
+            q[k].rgba = ((uint32_t)kCol8[d & 0xFF] << 24) | ((uint32_t)kCol8[(d >> 8) & 0xFF] << 16) | ((uint32_t)kCol8[(d >> 16) & 0xFF] << 8) | al;
+            q[k].st = ((uint32_t)(int32_t)(q[k].s * 32.0f) << 16) | ((uint32_t)(int32_t)(q[k].t * 32.0f) & 0xFFFFu);
+        }
+        quad_tri(&q[0], &q[1], &q[2], is_tex, bmode);
+        quad_tri(&q[0], &q[2], &q[3], is_tex, bmode);
+    }
+}
+
+/* kinds 1 (clear / translucent panel), 3 (menu image) and 2 (built-in font text) */
+static COLD_FN void draw_cmd_misc(const FCmd *cm, float sx, float sy, int IW, int IH)
 {
     if (cm->kind == 1) { /* limpar retangulo */
         int x0 = (int)(cm->rect[0] * sx), y0 = (int)(cm->rect[1] * sy);
@@ -612,88 +835,22 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
             rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
             rdpq_set_prim_color(RGBA32(cm->colour & 0xFF, (cm->colour >> 8) & 0xFF, (cm->colour >> 16) & 0xFF, a));
             rdpq_fill_rectangle(x0, y0, x1, y1);
-            s_valid = 0; s_up_slot = -1; s_persp = -1;
+            s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
         } else if (x1 > x0 && y1 > y0) {
             rdpq_set_mode_fill(RGBA32(cm->colour & 0xFF, (cm->colour >> 8) & 0xFF, (cm->colour >> 16) & 0xFF, 255));
             rdpq_fill_rectangle(x0, y0, x1, y1);
-            s_valid = 0; s_up_slot = -1; s_persp = -1; /* o modo de preenchimento substituiu o modo de desenho */
+            s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1; /* o modo de preenchimento substituiu o modo de desenho */
         }
         return;
     }
-    if (cm->kind == 3) { blit_img(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_persp = -1; return; } /* imagem do menu */
-    if (cm->kind == 2) { nfont_draw(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_persp = -1; return; } /* frase com a fonte do N64: o rdpq_text troca o modo do RDP */
-    if (cm->kind != 0 || cm->count < 3) return;
-    if (g_dbg == 1 && (cm->blend & 0xFFu) != 0) return;
-    if (g_dbg == 2 && (cm->blend & 0xFFu) == 0) return;
+    if (cm->kind == 3) { blit_img(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1; return; } /* imagem do menu */
+    if (cm->kind == 2) { nfont_draw(cm, sx, sy); s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1; return; } /* frase com a fonte do N64: o rdpq_text troca o modo do RDP */
+}
 
-    int slot;
-    if (cm->texture >= TEX_TOKEN_BASE && cm->texture < TEX_TOKEN_BASE + CACHE_N) { /* capturada no desenho */
-        slot = DBG_FLAT ? -1 : (int)(cm->texture - TEX_TOKEN_BASE);
-        if (slot >= 0) g_c[slot].used = g_frames + 1;
-    } else {
-        N64Tex *tx = (N64Tex *)(uintptr_t)cm->texture;
-        slot = DBG_FLAT ? -1 : tex_slot(tx, cmd_scale(cm, verts, tx, sx, sy), (cm->blend & 0xFFu) == 2);
-    }
-    if (slot < 0 && (cm->blend & 0xFFu) != 0 && !DBG_FLAT) return; /* sem dados e translucido: pula */
-
-    /* tipo: 0 = sem textura, 1 = textura x cor do vertice, 2 = so textura (todos os vertices brancos e opacos) */
-    int is_tex = slot >= 0 ? 1 : 0;
-    if (is_tex) {
-        int white = 1;
-        for (uint32_t k = 0; k < cm->count && white; ++k) {
-            const uint32_t d = verts[cm->first + k].rgba;
-            if ((d & 0xFFFFFFu) != 0xFFFFFFu || ((cm->blend & 0xFFu) == 1 && (d >> 24) != 0xFFu) || (cm->blend & 0xFFu) == 2) white = 0;
-        }
-        if (white) is_tex = 2;
-    }
-    if (!s_valid || is_tex != s_tex || (int)cm->blend != s_blend) {
-        rdpq_set_mode_standard();
-        rdpq_mode_persp(0); s_persp = 0; /* ligada triangulo a triangulo, so onde o w varia */
-        rdpq_mode_filter(g_opt_filter && !(cm->blend & 0x100u) ? FILTER_BILINEAR : FILTER_POINT); /* 0x100 = HUD, pixel-snapped */
-        if (is_tex) {
-            rdpq_mode_combiner(is_tex == 2 ? RDPQ_COMBINER_TEX : RDPQ_COMBINER_TEX_SHADE);
-            rdpq_mode_alphacompare((cm->blend & 0xFFu) == 0 ? 128 : 0);
-        } else {
-            rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
-            rdpq_mode_alphacompare(0);
-        }
-        if ((cm->blend & 0xFFu) == 1)      rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA)));
-        else if ((cm->blend & 0xFFu) == 2) rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA))); /* aditivo do PC: o RDP estoura a soma (arco-iris), entao vira transparencia de 75% */
-        else                     rdpq_mode_blender(0);
-        s_valid = 1; s_tex = is_tex; s_blend = (int)cm->blend;
-
-    }
-    float flat_r = 1.0f, flat_g = 1.0f, flat_b = 1.0f;
-    if (is_tex) {
-        if (s_up_slot == slot && s_up_ver == g_slot_ver[slot]) {
-            /* a mesma textura ja esta na TMEM */
-        } else {
-            const CEnt *e = &g_c[slot];
-            surface_t surf = surface_make(g_cbuf + (size_t)slot * SLOT_U16, FMT_RGBA16, e->pw, e->th, e->pw * 2);
-#if N64_UPLOAD_BLOCKS
-            if (g_ublk[slot] && !s_rec) {
-                rspq_block_run(g_ublk[slot]);
-
-            } else if (!s_rec && g_ublk_n[slot] < 255 && ++g_ublk_n[slot] >= 2 && g_ublk_live < UBLK_MAX_LIVE && heap_has_room()) {
-                rspq_block_begin();
-                rdpq_tex_upload(TILE0, &surf, NULL);
-                rspq_block_t *ub = rspq_block_end();
-                if (ub) { g_ublk[slot] = ub; ++g_ublk_live; rspq_block_run(ub); }
-                else rdpq_tex_upload(TILE0, &surf, NULL);
-            } else
-#endif
-            rdpq_tex_upload(TILE0, &surf, NULL);
-            s_up_slot = slot; s_up_ver = g_slot_ver[slot];
-
-        }
-    } else if (g_dbg == 3) { /* cor chapada pelo ponteiro da textura */
-        const uint32_t hsh = (cm->texture >> 3) * 2654435761u;
-        flat_r = 0.25f + (float)((hsh >> 8) & 0xFF) / 340.0f;
-        flat_g = 0.25f + (float)((hsh >> 16) & 0xFF) / 340.0f;
-        flat_b = 0.25f + (float)((hsh >> 24) & 0xFF) / 340.0f;
-    }
-
-    const float ts = slot >= 0 ? (float)g_c[slot].tw : 1.0f, tt = slot >= 0 ? (float)g_c[slot].th : 1.0f;
+/* commands of loose triangles (not marked as quads): the general loop */
+static COLD_FN void draw_tris_generic(const FCmd *cm, const FVert *verts, float sx, float sy, float ts, float tt, int is_tex,
+                                      float flat_r, float flat_g, float flat_b)
+{
     for (uint32_t t = 0; t + 2 < cm->count; t += 3) {
         const FVert *p = &verts[cm->first + t];
         if (is_tex == 2 && t + 5 < cm->count) {
@@ -743,10 +900,82 @@ static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int
         }
 
         
+        PROF_COUNT(PC_TRIS, 1);
+#ifdef N64_PROF
+        g_prof_area += 0.5f * fabsf((v[1][0] - v[0][0]) * (v[2][1] - v[0][1]) - (v[2][0] - v[0][0]) * (v[1][1] - v[0][1]));
+#endif
         if (is_tex == 2)  { rdpq_triangle(&kFmtTexOnly, v[0], v[1], v[2]); }
         else if (is_tex)  rdpq_triangle(&kFmtTex, v[0], v[1], v[2]);
         else              rdpq_triangle(&TRIFMT_SHADE, v[0], v[1], v[2]);
     }
+}
+
+static void draw_cmd(const FCmd *cm, const FVert *verts, float sx, float sy, int IW, int IH)
+{
+    if (__builtin_expect(cm->kind != 0, 0)) { draw_cmd_misc(cm, sx, sy, IW, IH); return; }
+    if (cm->count < 3) return;
+    if (g_dbg == 1 && (cm->blend & 0xFFu) != 0) return;
+    if (g_dbg == 2 && (cm->blend & 0xFFu) == 0) return;
+
+    int slot;
+    if (cm->texture >= TEX_TOKEN_BASE && cm->texture < TEX_TOKEN_BASE + CACHE_N) { /* capturada no desenho */
+        slot = DBG_FLAT ? -1 : (int)(cm->texture - TEX_TOKEN_BASE);
+        if (slot >= 0) g_c[slot].used = g_frames + 1;
+    } else {
+        N64Tex *tx = (N64Tex *)(uintptr_t)cm->texture;
+        slot = DBG_FLAT ? -1 : tex_slot(tx, cmd_scale(cm, verts, tx, sx, sy), 0.0f, (cm->blend & 0xFFu) == 2);
+    }
+    if (slot < 0 && (cm->blend & 0xFFu) != 0 && !DBG_FLAT) return; /* sem dados e translucido: pula */
+
+    /* tipo: 0 = sem textura, 1 = textura x cor do vertice, 2 = so textura (todos os vertices brancos e opacos) */
+    int is_tex = slot >= 0 ? 1 : 0;
+    if (is_tex) {
+        int white = 1;
+        for (uint32_t k = 0; k < cm->count && white; ++k) {
+            const uint32_t d = verts[cm->first + k].rgba;
+            if ((d & 0xFFFFFFu) != 0xFFFFFFu || ((cm->blend & 0xFFu) == 1 && (d >> 24) != 0xFFu) || (cm->blend & 0xFFu) == 2) white = 0;
+        }
+        if (white) is_tex = 2;
+    }
+    if (!s_valid || is_tex != s_tex || (int)(cm->blend & 0x1FFu) != s_blend) {
+        PROF_ENTER(PF_MODE);
+        rdpq_set_mode_standard();
+        rdpq_mode_persp(0); s_persp = 0; /* ligada triangulo a triangulo, so onde o w varia */
+        rdpq_mode_filter(g_opt_filter && !(cm->blend & 0x100u) ? FILTER_BILINEAR : FILTER_POINT); /* 0x100 = HUD, pixel-snapped */
+        if (is_tex) {
+            rdpq_mode_combiner(is_tex == 2 ? RDPQ_COMBINER_TEX : RDPQ_COMBINER_TEX_SHADE);
+            rdpq_mode_alphacompare((cm->blend & 0xFFu) == 0 ? 128 : 0);
+        } else {
+            rdpq_mode_combiner(RDPQ_COMBINER_SHADE);
+            rdpq_mode_alphacompare(0);
+        }
+        if ((cm->blend & 0xFFu) == 1)      rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA)));
+        else if ((cm->blend & 0xFFu) == 2) rdpq_mode_blender(RDPQ_BLENDER((IN_RGB, IN_ALPHA, MEMORY_RGB, INV_MUX_ALPHA))); /* aditivo do PC: o RDP estoura a soma (arco-iris), entao vira transparencia de 75% */
+        else                     rdpq_mode_blender(0);
+        s_valid = 1; s_tex = is_tex; s_blend = (int)(cm->blend & 0x1FFu);
+        PROF_LEAVE();
+
+    }
+    float flat_r = 1.0f, flat_g = 1.0f, flat_b = 1.0f;
+    if (is_tex) {
+        if (s_up_slot == slot && s_up_ver == g_slot_ver[slot]) {
+            /* a mesma textura ja esta na TMEM */
+        } else {
+            PROF_ENTER(PF_UPLOAD); tex_upload_raw(slot); PROF_LEAVE();
+            s_up_slot = slot; s_up_ver = g_slot_ver[slot];
+            PROF_COUNT(PC_UPLOADS, 1);
+
+        }
+    } else if (g_dbg == 3) { /* cor chapada pelo ponteiro da textura */
+        const uint32_t hsh = (cm->texture >> 3) * 2654435761u;
+        flat_r = 0.25f + (float)((hsh >> 8) & 0xFF) / 340.0f;
+        flat_g = 0.25f + (float)((hsh >> 16) & 0xFF) / 340.0f;
+        flat_b = 0.25f + (float)((hsh >> 24) & 0xFF) / 340.0f;
+    }
+
+    const float ts = slot >= 0 ? (float)g_c[slot].tw : 1.0f, tt = slot >= 0 ? (float)g_c[slot].th : 1.0f;
+    if (cm->blend & BLEND_QUADS) { draw_quads(cm, verts, sx, sy, ts, tt, is_tex); return; }
+    draw_tris_generic(cm, verts, sx, sy, ts, tt, is_tex, flat_r, flat_g, flat_b);
 }
 
 /* ---- blocos do RSP para texto estatico (briefing etc.) ----
@@ -789,7 +1018,7 @@ static void blk_run(const FCmd *cm, int n, const FVert *verts, float sx, float s
     if (ok) {
         for (int d = 0; d < b->ndep; ++d) g_c[b->dslot[d]].used = g_frames + 1; /* mantem os slots protegidos */
         rspq_block_run(b->blk);
-        s_valid = 0; s_up_slot = -1; s_persp = -1;
+        s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
 
         return;
     }
@@ -807,13 +1036,13 @@ static void blk_run(const FCmd *cm, int n, const FVert *verts, float sx, float s
         if (j == ndep) dslot[ndep++] = sl;
     }
     if (!heap_has_room()) { run_cmds(cm, n, verts, sx, sy, IW, IH); return; } /* sem folga de memoria: desenha direto */
-    s_valid = 0; s_up_slot = -1; s_persp = -1;
+    s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
     s_rec = 1;
     rspq_block_begin();
     run_cmds(cm, n, verts, sx, sy, IW, IH);
     rspq_block_t *nb = rspq_block_end();
     s_rec = 0;
-    s_valid = 0; s_up_slot = -1; s_persp = -1;
+    s_valid = 0; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
     if (!nb) { return; } /* nao deveria acontecer; sem bloco este quadro fica sem o texto */
     b->blk = nb;
     b->stamp = stamp; b->nruns = (uint32_t)n; b->optf = optf; b->sxb = sxb; b->syb = syb; b->ndep = ndep;
@@ -851,24 +1080,42 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
         inited = 1;
         g_active = 1;
     }
-    ublk_reap();
+    PROF_ENTER(PF_PRESENT);
+    PROF_COUNT(PC_CMDS, cmdCount); PROF_COUNT(PC_VERTS, vertCount);
+#ifdef N64_PROF
+    {   /* checksum of the frame's draw lists as the engine produced them (positions, uvs, colours, command kinds and sizes) */
+        extern uint32_t gta2_n64_prof_hash;
+        PROF_ENTER(PF_HASH);
+        uint32_t h = gta2_n64_prof_hash;
+        const uint32_t *w = (const uint32_t *)verts_;
+        for (int i = 0; i < vertCount * 6; ++i) h = (h ^ w[i]) * 16777619u;
+        const FCmd *hc = (const FCmd *)cmds_;
+        for (int i = 0; i < cmdCount; ++i) h = (h ^ (hc[i].kind | ((hc[i].blend & 0x1FFu) << 4) | (hc[i].count << 16))) * 16777619u;
+        gta2_n64_prof_hash = h;
+        PROF_LEAVE();
+    }
+#endif
 
     const FCmd *cmds = (const FCmd *)cmds_;
     const FVert *verts = (const FVert *)verts_;
     if (refWidth <= 0) refWidth = 640;
 
-    gta2_n64_audio_poll();
+    PROF_ENTER(PF_AUDIO); gta2_n64_audio_poll(); PROF_LEAVE();
+    PROF_ENTER(PF_WAIT);
     surface_t *disp = display_get();
+    PROF_LEAVE();
     SCR_W = (float)disp->width;
     SCR_H = (float)disp->height;
     const int IW = (int)disp->width, IH = (int)disp->height;
     const float sx = SCR_W / (float)refWidth, sy = SCR_H / 480.0f;
     g_last_sx = sx; g_last_sy = sy;
+    PROF_ENTER(PF_MODE);
     rdpq_attach(disp, NULL);
     rdpq_set_mode_fill(RGBA32(0, 0, 0, 255));
     rdpq_fill_rectangle(0, 0, IW, IH);
+    PROF_LEAVE();
 
-    s_valid = 0; s_tex = -1; s_blend = -1; s_up_slot = -1; s_persp = -1;
+    s_valid = 0; s_tex = -1; s_blend = -1; s_up_slot = -1; s_tile_known = 0; s_persp = -1;
     for (int c = 0; c < cmdCount; ) {
         const FCmd *cm = &cmds[c];
         if (cm->kind == 0 && cm->rect[3] != 0) { /* texto estatico marcado: tenta o bloco do RSP */
@@ -882,14 +1129,63 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
         ++c;
     }
 
-    rdpq_detach_show();
+#ifdef N64_PROF
+    {   /* every 32nd frame: wait for the RDP and checksum the finished framebuffer (pixel-exact check of the renderer itself) */
+        extern uint32_t gta2_n64_prof_fbhash;
+        if ((g_frames & 31u) == 0u
+#ifdef N64_PROF_DUMP
+            || g_frames == (N64_PROF_DUMP)
+#endif
+        ) {
+            PROF_ENTER(PF_HASH);
+            rdpq_detach_wait();
+            const uint16_t *fb = (const uint16_t *)disp->buffer;
+            uint32_t h = gta2_n64_prof_fbhash;
+            for (int y = 0; y < IH; ++y) {
+                const uint16_t *row = (const uint16_t *)((const uint8_t *)fb + (size_t)y * disp->stride);
+                for (int x = 0; x < IW; ++x) h = (h ^ row[x]) * 16777619u;
+            }
+            gta2_n64_prof_fbhash = h;
+#ifdef N64_PROF_DUMP
+            if (g_frames == (N64_PROF_DUMP)) { /* the whole frame as hex text, turned into a PNG on the host */
+                static const char hx[] = "0123456789abcdef";
+                char line[64 * 4 + 1];
+                debugf("[fbinfo] %d %d\n", IW, IH);
+                for (int y = 0; y < IH; ++y) {
+                    const uint16_t *row = (const uint16_t *)((const uint8_t *)fb + (size_t)y * disp->stride);
+                    for (int x0 = 0; x0 < IW; x0 += 64) {
+                        int n = 0;
+                        for (int x = x0; x < x0 + 64 && x < IW; ++x) { const unsigned v = row[x]; line[n++] = hx[v >> 12]; line[n++] = hx[(v >> 8) & 15]; line[n++] = hx[(v >> 4) & 15]; line[n++] = hx[v & 15]; }
+                        line[n] = 0;
+                        debugf("[fb] %s\n", line);
+                    }
+                }
+            }
+#endif
+            display_show(disp);
+            PROF_LEAVE();
+        } else rdpq_detach_show();
+    }
+#else
+    if (gta2_game_in_menu()) {
+        /* menus: show the frame only when the RDP has finished it (the last things drawn, the small text at the bottom, were
+           otherwise shown half drawn); the game keeps the CPU/RDP overlap */
+        rdpq_detach_wait();
+        display_show(disp);
+    } else rdpq_detach_show();
+#endif
     ++g_frames;
+#ifdef N64_PROF
+    PROF_COUNT(PC_AREA, g_prof_area * (1.0f / 1024.0f)); g_prof_area = 0.0f;
+#endif
 #ifdef N64_MEMLOG
     { static unsigned peak; unsigned n = 0, cur = 0, wasted = 0; for (int i = 0; i < CACHE_N; ++i) { if (g_c[i].used && g_frames - g_c[i].used < CACHE_GUARD) { ++n; wasted += 4096 - (unsigned)g_c[i].pw * g_c[i].th * 2; } if (g_c[i].used) ++cur; }
       if (n > peak) { peak = n; }
-      if ((g_frames % 120) == 0) { unsigned nb = 0; for (int i = 0; i < CACHE_N; ++i) if (g_ublk[i]) ++nb; debugf("[tcache] inuse=%u peak=%u everused=%u wasted=%uKB ublk=%u live=%d headroom=%ldKB\n", n, peak, cur, wasted / 1024, nb, g_ublk_live, (long)(__heap_top - (char *)sbrk(0)) / 1024); } }
+      if ((g_frames % 120) == 0) { debugf("[tcache] inuse=%u peak=%u everused=%u wasted=%uKB headroom=%ldKB\n", n, peak, cur, wasted / 1024, (long)(__heap_top - (char *)sbrk(0)) / 1024); } }
 #endif
-    gta2_n64_audio_poll();
+    PROF_ENTER(PF_AUDIO); gta2_n64_audio_poll(); PROF_LEAVE();
+    PROF_LEAVE();
+    PROF_FRAME();
 #if PACE_ENABLE
     { /* limitador de ritmo: ver comentario de PACE_TICK_MS. O tempo de espera conta como "espera", nao como desenho */
         const uint32_t tp0 = timer_ticks();

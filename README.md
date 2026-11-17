@@ -8,7 +8,7 @@ https://www.youtube.com/watch?v=rrHVhQ7jRxY
 
 [🇺🇸 English](#english) · [🇧🇷 Português Brasileiro](#português-brasileiro)
 
-**Expansion Pak required / Expansion Pak obrigatório · ~58 MB ROM**
+**Expansion Pak required / Expansion Pak obrigatório · ~64 MB ROM**
 
 </div>
 
@@ -32,12 +32,12 @@ Personal / educational project. Not affiliated with or endorsed by Rockstar Game
 
 ## Project status and features
 
-This is a playable port of GTA 2 for Nintendo 64 that is still a **work in progress**. It preserves the PC version's game content, including the **Mad Island** bonus map absent from the PlayStation release. This fork has only been tested in ares, not on real N64 hardware. The full ROM is approximately **58 MB**.
+This is a playable port of GTA 2 for Nintendo 64 that is still a **work in progress**. It preserves the PC version's game content, including the **Mad Island** bonus map absent from the PlayStation release. This fork has only been tested in ares, not on real N64 hardware. The full ROM is approximately **64 MB**.
 
 The game includes **English, Spanish and Brazilian Portuguese**, with PT-BR integrated into the game's native GXT text system rather than drawn as a translation overlay. It also includes two selectable presentation modes:
 
-- **PC mode:** extended camera distance and lighting (dusk mode). The frame rate really drops in this mode.
-- **PSX mode:** reduced visual settings and lighting (noon mode). Better frame rate than dusk but there are still slowdowns, it's not even close to a stable 30 FPS.
+- **PC mode** (shown as **NIGHT** in the options menu): extended camera distance and lighting (dusk mode). The frame rate really drops in this mode.
+- **PSX mode** (shown as **DAY** in the options menu): reduced visual settings and lighting (noon mode). Better frame rate than dusk but there are still slowdowns, it's not even close to a stable 30 FPS.
 
 ## Important: the game is NOT included
 
@@ -89,6 +89,8 @@ The first build takes several minutes.
 * [libdragon](https://github.com/DragonMinded/libdragon) (preview branch) with its MIPS toolchain, installed at
   `/opt/libdragon` (or set `N64_INST=/path`). The build uses `audioconv64` and `mkdfs` from it.
 * `git`, `patch`, `make`, `python3` (standard library only).
+* Optional: `ffmpeg` and `ffprobe` on the PATH, to include the intro movie. On WSL the Windows `ffmpeg.exe` /
+  `ffprobe.exe` are enough. Without them the ROM is built without the intro.
 * **The GTA 2 game data** (GTA 2 was released as freeware by Rockstar): the game's `data` folder, placed at
   `../gta2_data/data` (next to this repository) or passed as `GAME_DATA=/path/to/data`.
 
@@ -96,9 +98,16 @@ The first build takes several minutes.
 
 `fstyle.sty`, `e.gxt`, `s.gxt`, the city maps (`bil`, `ste`, `wil`: `.gmp`, `.sty`, `.scr` and the mission folders), the bonus
 levels, `nyc.gci`, `test1.seq`, `attract/`, `keyboard/`, `frontend/` (menu screens), `audio/` (sound banks) and `gtaudio/` (radio WAVs).
+`movie/intro.bik` (the intro) is converted to MPEG-1 at 320x240 with libdragon's `videoconv64` and played at power-on
+(MPEG-1 rather than the smaller H.264 because its decoder takes far less of the console's RAM, and the cartridge has room);
+A, B or Start skips it, and holding Z at boot skips it together with the menu.
 A missing file only prints a warning during the data step. `p.gxt` (Brazilian Portuguese text) is not part of the original game: if it is
 missing from the data folder, the data step generates it from `e.gxt` + `tools/pt_br.tsv` (`tools/make_pt_gxt.py`), so the language option
-(Options page) can switch between English, Spanish and Portuguese. The game font has no tilde glyphs, so `ã`/`õ` are drawn as `â`/`ô`.
+(Options page) can switch between English, Spanish and Portuguese.
+The in-game text font (mission text, pager, HUD) is the PlayStation version's, drawn at 2x so each of its pixels covers one framebuffer row: the build
+adds it to the city `.sty` files (`tools/ps1_font.py`, glyphs in `tools/ps1_font.json`; costs ~64 KB of cartridge, no RAM). `PS1_FONT=0` keeps the PC font.
+The GTA2 title logo on the menu screens is redrawn at build time from a vector (`tools/gta2_logo.svg`) at 640x240 with exact edge coverage instead of resampling the 640x480 picture.
+The thin white and red menu fonts of `fstyle.sty` are the PlayStation ones too (`tools/ps1_menu_font.py`, glyphs captured from the PS1 menus in `tools/ps1_menu_font.json`): letters A-Z, `1`, `2`, `-` and `/` are PS1; the other digits and punctuation keep the PC shapes, snapped to the framebuffer rows. The game font has no tilde glyphs, so `ã`/`õ` are drawn as `â`/`ô`.
 
 ## Building on Windows (WSL) in one command
 
@@ -118,9 +127,11 @@ Pass them to `build.sh` or `make -f Makefile.recomp`:
 |---|---|
 | `GAME_DATA=/path/to/data` | Where the GTA 2 `data` folder is (default `../gta2_data/data`) |
 | `MAPS="bil ste wil"` | Cities to include (fewer = smaller ROM) |
+| `INCLUDE_INTRO=0` | Leave out the intro movie (about 11 MB). `INTRO_QUALITY=75` sets its quality (0..100; higher = bigger) |
 | `INCLUDE_FRONTEND=0` | Leave out the menu screens (smaller ROM; hold Z at boot to jump straight into the map) |
 | `RADIO_RATE=12000` | Radio sample rate in Hz (`8000` = smaller) |
 | `N64_INST=/path` | libdragon install location |
+| `N64_IMG_W=640` `N64_IMG_H=240` (environment) | Size the menu screens are resampled to when the data is prepared (`tools/img_n64.py`): the framebuffer size. The game lays them out for 640x480; they are filtered once on the PC instead of being scaled on the console |
 | `OVERSCAN_X=36` `OVERSCAN_Y=28` | Safe-area borders in VI dots (640x480 base) so TVs/upscalers do not crop the picture edges. `0` = full image (emulator) |
 
 Rendering/tuning knobs (pass as `EXTRA_CFLAGS="-DNAME=value ..."`):
@@ -128,13 +139,32 @@ Rendering/tuning knobs (pass as `EXTRA_CFLAGS="-DNAME=value ..."`):
 | Define | Meaning |
 |---|---|
 | `N64_CAM_ZOOM_PCT=126` | Camera height. Higher = closer to the ground (sees less map, runs faster). 130 was the previous default; every 1% costs about 1.5% frame time |
-| `N64_LUZES=0` | Initial lighting (the Options menu MODE row sets it: PSX = off, PC = on). `0` = off (fastest), `1` = flat light per quad (~5% frame time, blocky), `2` = smooth per-corner light (~9%) |
+| `N64_LUZES=0` | Initial lighting (the Options menu day/night row sets it: DAY = PSX = off, NIGHT = PC = on). `0` = off (fastest), `1` = flat light per quad (~5% frame time, blocky), `2` = smooth per-corner light (~9%) |
 | `N64_LIGHT_GAIN=0.6` | Strength of coloured lights (1.0 = PC). Lower avoids blown-out red/neon tints |
 | `N64_AMBIENT_FLOOR=100` | Minimum ambient light (0-255) when lighting is on. `0` = as dark as the PC version |
 | `N64_CACHE_N=192` | Converted-texture cache slots (4 KB each). The measured peak is about 135 |
-| `N64_HEAP_RESERVE_KB=320` | RAM the renderer's speed caches must leave free for the engine (prevents "Out of memory" crashes) |
+| `N64_HEAP_RESERVE_KB=200` | RAM the renderer's speed caches must leave free for the engine (prevents "Out of memory" crashes) |
 
 `bash build.sh clean` removes the build output; `bash setup_engine.sh --force` redoes the engine checkout.
+
+### Performance layout and profiling
+
+The link step places the functions that run for every tile, sprite and triangle next to each other (list in
+`port/n64/hot_order.txt`), so they stay in the console's 16 KB instruction cache. `HOT_ORDER=` on the build command line
+links in the stock order instead. `EXTRA_CFLAGS="-DN64_FAST_TRI=0"` sends triangles through libdragon's `rdpq_triangle()`
+instead of the port's own (identical output, slower); use it if a newer libdragon changes its triangle commands.
+
+Measuring (output on the debug channel: ISViewer in ares, or USB):
+
+| `EXTRA_CFLAGS` define | Meaning |
+|---|---|
+| `N64_PROF` | Per-frame timing by phase (`[prof]` lines), a `[bench]` summary for frames `N64_BENCH_F0`..`N64_BENCH_F1` (300..1100) and checksums of the draw lists and of the framebuffer (`[benchsum]`): an optimisation that keeps the picture keeps the `fbhash` |
+| `N64_BENCH` | Scripted pad (walks and turns by frame number), so every build plays the same frames. Use with `N64_BOOT_MAP=0..2` |
+| `N64_PROF_SAMPLE` | Sampling profiler (`[smp]` lines). `python3 tools/prof_order.py build_recomp/gta2_recomp.map ares_output.txt > port/n64/hot_order.txt` turns a run into a new hot-function list |
+| `N64_PROF_DUMP=frame` | Dumps that frame as hex text (`[fb]` lines) |
+| `N64_MICROBENCH` | Prints at boot what an instruction, a cache miss and float maths cost on the machine |
+
+Use a separate `BUILD_DIR=...` for each set of flags (make does not notice changed flags).
 
 ## Repository layout
 
@@ -144,7 +174,7 @@ Rendering/tuning knobs (pass as `EXTRA_CFLAGS="-DNAME=value ..."`):
 | `port/compat/` | Small Win32 / DirectX / MSVC compatibility headers used to compile the decompiled engine with GCC |
 | `port/game_srcs.txt` | Engine source files compiled into the ROM |
 | `patches/gta2_re_n64.patch` | Our changes on top of `gta2_re` (pinned commit `02de8be`) |
-| `tools/` | Build-time data converters (little- to big-endian for maps/styles/text, audio, shared SFX bank) |
+| `tools/` | Build-time data converters (little- to big-endian for maps/styles/text, audio, shared SFX bank, menu screens resampled to the framebuffer), hot-code link order helpers |
 | `Makefile.recomp`, `build.sh`, `setup_engine.sh` | Build system |
 
 `port/gta2_re/` and `port/compat_ci/` are generated by `setup_engine.sh` and are git-ignored.
@@ -154,7 +184,8 @@ Rendering/tuning knobs (pass as `EXTRA_CFLAGS="-DNAME=value ..."`):
 * **DMA Design / Rockstar Games**: the original GTA 2.
 * **CriminalRETeam / `gta2_re`**: the decompilation this port runs on.
 * **M1sterMo / `gta2-browser`**: the browser port whose platform-abstraction approach and compatibility headers this work started from (MIT, see `THIRD_PARTY_NOTICES.md`).
-* **libdragon**: N64 SDK, RDP/RSP/audio libraries.
+* **libdragon**: N64 SDK, RDP/RSP/audio libraries, video decoder and converter.
+* **BigChat88 / `N64GTA2Port`**: another port from the same base, which showed that the intro movie can be converted at build time and played with libdragon's movie player.
 
 
 ---
@@ -169,15 +200,15 @@ A lógica do jogo é executada no console com um renderizador próprio para o RD
 
 ## Estado do projeto: em desenvolvimento
 
-Este é um port jogável, mas ainda **em desenvolvimento**. Este fork foi testado apenas no ares, não em um N64 real. A ROM tem aproximadamente **58 MB** e preserva o conteúdo da versão PC, incluindo as cidades e o mapa bônus **Mad Island**, ausente na versão PlayStation.
+Este é um port jogável, mas ainda **em desenvolvimento**. Este fork foi testado apenas no ares, não em um N64 real. A ROM tem aproximadamente **64 MB** e preserva o conteúdo da versão PC, incluindo as cidades e o mapa bônus **Mad Island**, ausente na versão PlayStation.
 
 ### Recursos e diferenças
 
 | Recurso | Descrição |
 |---|---|
 | **Origem do port** | Versão PC, utilizando a lógica reconstruída pelo `gta2_re` |
-| **Modo PSX** | Configurações visuais e iluminação reduzidas (modo meio-dia). Taxa de quadros melhor que no modo entardecer, mas ainda há lentidão; está longe de 30 FPS estáveis |
-| **Modo PC** | Distância ampliada da câmera e iluminação (modo entardecer). A taxa de quadros cai bastante neste modo |
+| **Modo PSX** (aparece como **DIA** no menu) | Configurações visuais e iluminação reduzidas (modo meio-dia). Taxa de quadros melhor que no modo entardecer, mas ainda há lentidão; está longe de 30 FPS estáveis |
+| **Modo PC** (aparece como **NOITE** no menu) | Distância ampliada da câmera e iluminação (modo entardecer). A taxa de quadros cai bastante neste modo |
 | **Conteúdo** | Conteúdo da versão PC preservado, incluindo **Mad Island** |
 | **Idiomas** | Inglês, espanhol e **português brasileiro** selecionáveis no menu |
 | **PT-BR nativo** | Tradução integrada ao sistema de textos **GXT** do jogo, não uma camada gráfica sobreposta |
@@ -225,6 +256,7 @@ Se `p.gxt` não existir nos dados originais, o processo de compilação o gera a
 |---|---|
 | `GAME_DATA=/caminho/data` | Pasta dos dados originais |
 | `MAPS="bil ste wil"` | Cidades incluídas |
+| `INCLUDE_INTRO=0` | Deixa o filme de abertura de fora (cerca de 11 MB). `INTRO_QUALITY=75` define a qualidade (0..100; maior = arquivo maior) |
 | `INCLUDE_FRONTEND=0` | Remove telas do menu para reduzir a ROM |
 | `RADIO_RATE=12000` | Taxa de amostragem das rádios (Hz) |
 | `N64_INST=/caminho` | Instalação da libdragon |
@@ -235,11 +267,11 @@ Ajustes do renderizador podem ser informados por `EXTRA_CFLAGS="-DNOME=valor ...
 | Definição | Função |
 |---|---|
 | `N64_CAM_ZOOM_PCT=126` | Altura/distância da câmera; valores maiores mostram menos mapa |
-| `N64_LUZES=0` | Iluminação inicial; menu MODE alterna PSX/PC |
+| `N64_LUZES=0` | Iluminação inicial; a linha DIA/NOITE do menu alterna PSX/PC |
 | `N64_LIGHT_GAIN=0.6` | Intensidade das luzes coloridas |
 | `N64_AMBIENT_FLOOR=100` | Iluminação ambiente mínima |
 | `N64_CACHE_N=192` | Slots do cache de texturas convertidas |
-| `N64_HEAP_RESERVE_KB=320` | Memória reservada para o motor |
+| `N64_HEAP_RESERVE_KB=200` | Memória reservada para o motor |
 
 Use `bash build.sh clean` para limpar a compilação e `bash setup_engine.sh --force` para refazer o checkout do motor.
 

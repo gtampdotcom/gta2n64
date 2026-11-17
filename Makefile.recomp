@@ -16,6 +16,13 @@ FS_DIR     = filesystem_recomp
 # Z ao ligar para entrar direto no mapa).
 INCLUDE_FRONTEND ?= 1
 FRONTEND_DIR = $(if $(filter 1,$(INCLUDE_FRONTEND)),frontend,)
+# The game's intro movie (movie/intro.bik), converted to MPEG-1 320x240 by libdragon's videoconv64: about 10 MB. Needs ffmpeg
+# on the build machine (on WSL the Windows ffmpeg.exe is enough); without it, or with INCLUDE_INTRO=0, the ROM has no intro.
+# INTRO_QUALITY = videoconv64's 0..100 quality scale.
+INCLUDE_INTRO ?= 1
+INTRO_QUALITY ?= 75
+INTRO_ENTRY = $(if $(filter 1,$(INCLUDE_INTRO)),movie/intro.bik,)
+export INTRO_QUALITY
 # Mapas (cidades): bil = City 3 (Industrial), ste = City 2 (Residential), wil = City 1 (Downtown). Cada um: .gmp + .sty + .scr + pasta de missoes.
 # Para uma ROM menor, ex.: MAPS="bil".
 MAPS ?= bil ste wil
@@ -28,7 +35,7 @@ RADIOS ?= 1 2 3 4 5 5a 6 6a 7 7a 8 8a 9 9a 10 10a 11 11a 12 101a A D
 RADIO_ENTRIES = $(foreach r,$(RADIOS),gtaudio/$(r).wav)
 # Arquivos/pastas de dados para o boot (sem diferenciar maiusculas). Ajuste a lista conforme o motor for pedindo (veja o log "fopen(...)").
 # Bancos de efeitos: tools/stage_data.sh junta bil/ste/wil num unico audio/sfx.raw (variavel SFX_MAPS).
-DATA_ENTRIES ?= fstyle.sty audio/vocals e.gxt s.gxt p.gxt $(MAP_ENTRIES) $(BONUS_ENTRIES) nyc.gci test1.seq attract keyboard $(FRONTEND_DIR) \
+DATA_ENTRIES ?= fstyle.sty audio/vocals e.gxt s.gxt p.gxt $(MAP_ENTRIES) $(BONUS_ENTRIES) nyc.gci test1.seq attract keyboard $(FRONTEND_DIR) $(INTRO_ENTRY) \
                 audio/bil.raw audio/bil.sdt audio/fstyle.raw audio/fstyle.sdt $(RADIO_ENTRIES)
 
 ENGINE := $(shell tr -d '\r' < port/game_srcs.txt)
@@ -37,7 +44,7 @@ PLAT   := win32_n64 dinput_n64 crt_n64 miles_n64 bink_n64 gbh_n64 vid_n64 frame_
 
 ENGINE_OBJS := $(addprefix $(OBJ_DIR)/port/gta2_re/Source/,$(addsuffix .o,$(ENGINE)))
 PLAT_OBJS   := $(addprefix $(OBJ_DIR)/port/n64/,$(addsuffix .o,$(PLAT)))
-OBJS := $(ENGINE_OBJS) $(PLAT_OBJS) $(OBJ_DIR)/port/n64/main_n64.o $(OBJ_DIR)/port/n64/exc_fix.o $(OBJ_DIR)/port/n64/render_n64.o $(OBJ_DIR)/port/n64/audio_n64.o
+OBJS := $(ENGINE_OBJS) $(PLAT_OBJS) $(OBJ_DIR)/port/n64/main_n64.o $(OBJ_DIR)/port/n64/exc_fix.o $(OBJ_DIR)/port/n64/render_n64.o $(OBJ_DIR)/port/n64/audio_n64.o $(OBJ_DIR)/port/n64/intro_n64.o
 
 CXX_STD ?= -std=gnu++17
 CXX_ENGINE = $(CXX_STD) -fshort-wchar -fms-extensions -fpermissive -w -DGTA2_PORT=1 -DN64 -fno-exceptions -fno-rtti \
@@ -66,10 +73,10 @@ $(OBJ_DIR)/%.o: %.cpp
 OVERSCAN_X ?= 36
 OVERSCAN_Y ?= 28
 $(OBJ_DIR)/port/n64/main_n64.o: N64_CFLAGS += -DN64_OVERSCAN_X=$(OVERSCAN_X) -DN64_OVERSCAN_Y=$(OVERSCAN_Y) $(EXTRA_CFLAGS)
-$(OBJ_DIR)/port/n64/render_n64.o: N64_CFLAGS += $(EXTRA_CFLAGS)
+$(OBJ_DIR)/port/n64/render_n64.o $(OBJ_DIR)/port/n64/intro_n64.o: N64_CFLAGS += $(EXTRA_CFLAGS)
 
 # Otimizacao da camada de plataforma (renderer/conversao/desenho): codigo pequeno e quente por quadro.
-PORT_OPT ?= -O3
+PORT_OPT ?= -O2
 $(PLAT_OBJS): N64_CXXFLAGS += $(PORT_OPT)
 $(OBJ_DIR)/port/n64/render_n64.o: N64_CFLAGS += $(PORT_OPT)
 
@@ -87,6 +94,16 @@ $(BUILD_DIR)/gta2_recomp.dfs: stage-data
 	@echo "    [DFS] $@"
 	$(N64_MKDFS) $@ $(FS_DIR)
 
+# Hot-code layout: the functions that run for every tile/sprite/triangle are linked first and next to each other, so they
+# stop evicting one another from the 16 KB direct-mapped instruction cache (see tools/make_hot_ld.py). HOT_ORDER= turns it off.
+# The same generated script also keeps the intro movie's code in one block, reclaimed as memory after the movie.
+HOT_ORDER ?= port/n64/hot_order.txt
+HOT_LD = $(BUILD_DIR)/n64_hot.ld
+$(HOT_LD): $(wildcard $(HOT_ORDER)) tools/make_hot_ld.py
+	@mkdir -p $(dir $@)
+	@python3 tools/make_hot_ld.py $(N64_INST)/mips64-elf/lib/n64.ld "$(HOT_ORDER)" $@
+$(BUILD_DIR)/gta2_recomp.elf: $(HOT_LD)
+$(BUILD_DIR)/gta2_recomp.elf: N64_LDFLAGS := $(subst -Tn64.ld,-T$(HOT_LD),$(N64_LDFLAGS))
 $(BUILD_DIR)/gta2_recomp.elf: N64_LDFLAGS += $(EXTRA_LDFLAGS)
 $(BUILD_DIR)/gta2_recomp.elf: $(OBJS)
 

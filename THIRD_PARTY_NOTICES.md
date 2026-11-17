@@ -48,3 +48,10 @@ Used as an external SDK (Unlicense). Not included.
 ## Grand Theft Auto 2
 
 Property of Rockstar Games / Take-Two Interactive. No game assets, binaries or ROMs are part of this repository.
+
+## GTA2 title logo (vector)
+
+`tools/gta2_logo.svg` is the "Grand Theft Auto 2 logo" from Wikimedia Commons
+(<https://commons.wikimedia.org/wiki/File:Grand_Theft_Auto_2_logo.svg>, vectorised by Connum, optimised by VulcanSphere), tagged
+public domain as a text logo (simple geometric shapes). The logo is a trademark of Rockstar Games. The build uses it only to redraw
+the logo on the menu screens at the console's resolution (`tools/img_n64.py`, `tools/logo_svg.py`).
