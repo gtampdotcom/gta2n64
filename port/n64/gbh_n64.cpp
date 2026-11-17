@@ -529,7 +529,12 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
             mx = v[i].x < mx ? v[i].x : mx;
             my = v[i].y < my ? v[i].y : my;
         }
-        const float dx = 2.0f * floorf(mx * 0.5f + 0.5f) - mx, dy = 2.0f * floorf(my * 0.5f + 0.5f) - my;
+        // 4 layout units = 2 framebuffer rows: 2D art always starts on an EVEN framebuffer row (a rectangle starting on an odd row lost its first row of texels:
+        // the first menu line and ammo digits came out with their tops cut off)
+        float ysn_fx, ysn_fy;
+        gta2_n64_fb_scale(&ysn_fx, &ysn_fy);
+        const float ysn = ysn_fy > 0.75f ? 2.0f : 4.0f; // 2 framebuffer rows either way (1 layout unit = 1 row in 640x480, 0.5 row in 640x240)
+        const float dx = 2.0f * floorf(mx * 0.5f + 0.5f) - mx, dy = ysn * floorf(my / ysn + 0.5f) - my;
         for (int i = 0; i < count; ++i)
         {
             v[i].x += dx;
@@ -633,13 +638,16 @@ void Draw(u32 flags, STexture* tex, Vert* v, int count, u32 baseColour)
         const Vert& s = v[i];
         const u32 d = s.diff;
         FrameVertex& a = out[i];
-        float x = s.x - 0.5f;
+        // HUD / menu art is already snapped to whole framebuffer pixels: the Direct3D half-pixel shift would put the rectangle's
+        // edges between pixels and the RDP then dropped the first row and the last column of the art
+        const float half = crisp2d ? 0.0f : 0.5f;
+        float x = s.x - half;
         if (offx != 0.0f)
         {
             x += offx;
         }
         a.x = x;
-        a.y = s.y - 0.5f;
+        a.y = s.y - half;
         a.w = s.w;
         a.u = s.u * itw;
         a.v = s.v * ith;

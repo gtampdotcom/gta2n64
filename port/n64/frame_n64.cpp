@@ -688,7 +688,18 @@ static float gHudK = 1.0f, gHudAx, gHudAy;
 
 float gta2_n64_hud_scale(int which)
 {
-    return which == 2 ? N64_HUD_SCALE_TOP : which == 1 ? N64_HUD_SCALE : 1.0f;
+    // N64_HUD_EXACT (default): every element keeps its 640x480 size. K cancels the TV-safe shrink exactly (net scale 1.0), so 2D art
+    // and the PS1 font (2x2 layout units per pixel) land on whole framebuffer pixels instead of being resampled (blurry, rows lost).
+    // Elements stay inside the safe margin because they are anchored to the screen corner/edge they belong to.
+#ifndef N64_HUD_EXACT
+#define N64_HUD_EXACT 1
+#endif
+#if N64_HUD_EXACT
+    (void)which;
+    return 640.0f / (640.0f - 2.0f * N64_HUD_SAFE_X);
+#else
+    return which == 3 ? 640.0f / (640.0f - 2.0f * N64_HUD_SAFE_X) : which == 2 ? N64_HUD_SCALE_TOP : which == 1 ? N64_HUD_SCALE : 1.0f;
+#endif
 }
 
 void gta2_n64_hud_begin(float ax, float ay, int which)

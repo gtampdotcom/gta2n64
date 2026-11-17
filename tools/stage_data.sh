@@ -96,11 +96,36 @@ for e in "$@"; do
         # menu screens: resampled here to the size they cover on the N64 framebuffer (tools/img_n64.py), not at run time.
         # Redone only when the source, the converter or the target size changed.
         dst="$out/data/$low"
-        if [ "$img_force" = 1 ] || [ ! -f "$dst" ] || [ "$f" -nt "$dst" ] || [ "$here/img_n64.py" -nt "$dst" ]; then
+        if [ "$img_force" = 1 ] || [ ! -f "$dst" ] || [ "$f" -nt "$dst" ] || [ "$here/img_n64.py" -nt "$dst" ] || [ "$here/logo_svg.py" -nt "$dst" ] || [ "$here/gta2_logo.svg" -nt "$dst" ]; then
           echo "    [IMG] $low (${N64_IMG_W:-640}x${N64_IMG_H:-240})"
           python3 "$here/img_n64.py" "$f" "$dst" "${N64_IMG_W:-640}" "${N64_IMG_H:-240}" || { echo "ERRO convertendo $f"; exit 1; }
         fi ;;
-      *.gxt|*.sty|*.gmp)
+      *.sty)
+        # city styles (not fstyle.sty, which has no in-game font): the PS1 text font replaces the PC "normal" font (tools/ps1_font.py).
+        # PS1_FONT=0 keeps the PC font.
+        case "$low" in
+          fstyle.sty)
+            # front-end: the thin menu fonts (white and red) become the PlayStation ones (tools/ps1_menu_font.py)
+            # PS1_MENU_FONT=0 keeps the PC menu font (best when the menus run in 640x480i, where it is not squashed)
+            if [ "${PS1_MENU_FONT:-${PS1_FONT:-1}}" = 1 ]; then
+              ptmp="$(mktemp --suffix=.sty)"
+              python3 "$here/ps1_menu_font.py" "$f" "$ptmp" || { echo "ERRO na fonte PS1 do menu de $f"; rm -f "$ptmp"; exit 1; }
+              python3 "$here/le2be.py" "$ptmp" "$out/data/$low" || { echo "ERRO convertendo $f"; rm -f "$ptmp"; exit 1; }
+              rm -f "$ptmp"
+            else
+              python3 "$here/le2be.py" "$f" "$out/data/$low" || { echo "ERRO convertendo $f"; exit 1; }
+            fi ;;
+          *)
+            if [ "${PS1_FONT:-1}" = 1 ]; then
+              ptmp="$(mktemp --suffix=.sty)"
+              python3 "$here/ps1_font.py" "$f" "$ptmp" || { echo "ERRO na fonte PS1 de $f"; rm -f "$ptmp"; exit 1; }
+              python3 "$here/le2be.py" "$ptmp" "$out/data/$low" || { echo "ERRO convertendo $f"; rm -f "$ptmp"; exit 1; }
+              rm -f "$ptmp"
+            else
+              python3 "$here/le2be.py" "$f" "$out/data/$low" || { echo "ERRO convertendo $f"; exit 1; }
+            fi ;;
+        esac ;;
+      *.gxt|*.gmp)
         python3 "$here/le2be.py" "$f" "$out/data/$low" || { echo "ERRO convertendo $f"; exit 1; } ;;
       gtaudio/*.wav)
         dst="$out/data/${low%.wav}.wav64"

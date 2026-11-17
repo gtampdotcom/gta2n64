@@ -364,6 +364,43 @@ static void microbench(void)
 }
 #endif
 
+#ifndef N64_OVERSCAN_X
+#define N64_OVERSCAN_X 36
+#endif
+#ifndef N64_OVERSCAN_Y
+#define N64_OVERSCAN_Y 28
+#endif
+#ifdef N64_RES_MENU_480I
+/* Menus in 640x480 interlaced (the art and the PC font are drawn for 640x480), the game in 640x240: the 480i framebuffers need
+ * 614 KB more heap than the game can spare. Called every frame with "is the menu open" and by the engine just before a game
+ * starts (winmain.cpp). The switch to 480i is only made when the heap has room for the two bigger buffers; otherwise the menus
+ * stay in 240p (the menu pictures are stored for 480 rows and are scaled down by the renderer then). */
+static int s_hires, s_hires_tried;
+void gta2_n64_display_mode(int hires)
+{
+    if (hires == s_hires) return;
+    if (hires) { if (s_hires_tried) return; s_hires_tried = 1; } else { s_hires_tried = 0; }
+    rspq_wait();
+    display_close();
+    int ok = 0;
+    if (hires) {
+        /* the very allocation display_init() will make: two uncached, 64-byte aligned 640x480 RGBA16 buffers */
+        void *a = malloc_uncached_aligned(64, 640 * 480 * 2);
+        void *b = a ? malloc_uncached_aligned(64, 640 * 480 * 2) : NULL;
+        if (a && b) ok = 1;
+        if (b) free_uncached(b);
+        if (a) free_uncached(a);
+        debugf("[res] 480i %s (free=%d)\n", ok ? "fits" : "does not fit", mallinfo().fordblks);
+    }
+    if (ok) display_init(RESOLUTION_640x480, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
+    else display_init(RESOLUTION_640x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
+    vi_set_borders((vi_borders_t){ N64_OVERSCAN_X, N64_OVERSCAN_X, N64_OVERSCAN_Y, N64_OVERSCAN_Y });
+    s_hires = ok;
+}
+#else
+void gta2_n64_display_mode(int hires) { (void)hires; }
+#endif
+
 int main(void)
 {
     debug_init_isviewer();
@@ -385,6 +422,12 @@ int main(void)
 #endif
     vi_set_borders((vi_borders_t){ N64_OVERSCAN_X, N64_OVERSCAN_X, N64_OVERSCAN_Y, N64_OVERSCAN_Y });
     /* resolucao: console_init() deixa a tela em 640x240 (mesma configuracao do build que ficou sem linhas) */
+#ifdef N64_RES_480I
+    /* experiment: 640x480 interlaced. The renderer takes its scale from the display height, so the 640x480 layout maps 1:1 */
+    display_close();
+    display_init(RESOLUTION_640x480, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
+    vi_set_borders((vi_borders_t){ N64_OVERSCAN_X, N64_OVERSCAN_X, N64_OVERSCAN_Y, N64_OVERSCAN_Y });
+#endif
     timer_init();
 #ifdef N64_MICROBENCH
     microbench();
@@ -405,7 +448,11 @@ int main(void)
            the mode console_init() left it in, which is the one the game is drawn in (640x240) */
         extern int gta2_n64_play_intro(int crt_margin);
         if (gta2_n64_boot_map < 0 && gta2_n64_play_intro(N64_OVERSCAN_X > 0 || N64_OVERSCAN_Y > 0)) {
+#ifdef N64_RES_480I
+            display_init(RESOLUTION_640x480, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
+#else
             display_init(RESOLUTION_640x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
+#endif
             vi_set_borders((vi_borders_t){ N64_OVERSCAN_X, N64_OVERSCAN_X, N64_OVERSCAN_Y, N64_OVERSCAN_Y });
         }
     }
@@ -432,6 +479,9 @@ int main(void)
     {
         poll_input();
         const int r = gta2_game_frame();
+#ifdef N64_RES_MENU_480I
+        gta2_n64_display_mode(gta2_game_in_menu());
+#endif
 #ifdef N64_MEMLOG
         { static unsigned fr; if ((++fr % 10) == 0) { struct mallinfo mi = mallinfo(); { extern unsigned g_smallN, g_smallB; { extern char *__heap_end, *__heap_top; extern uint32_t gta2_n64_frames(void); debugf("[mem] f=%u pres=%u arena=%d used=%d free=%d brk=%p sp=%p heap_end=%p heap_top=%p\n", fr, (unsigned)gta2_n64_frames(), mi.arena, mi.uordblks, mi.fordblks, sbrk(0), (void*)&mi, (void*)__heap_end, (void*)__heap_top); } (void)g_smallN; (void)g_smallB; } } }
 #endif

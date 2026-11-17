@@ -34,8 +34,8 @@ This is a playable port of GTA 2 for Nintendo 64 that is still a **work in progr
 
 The game includes **English, Spanish and Brazilian Portuguese**, with PT-BR integrated into the game's native GXT text system rather than drawn as a translation overlay. It also includes two selectable presentation modes:
 
-- **PC mode:** extended camera distance and lighting (dusk mode). The frame rate really drops in this mode.
-- **PSX mode:** reduced visual settings and lighting (noon mode). Better frame rate than dusk but there are still slowdowns, it's not even close to a stable 30 FPS.
+- **PC mode** (shown as **NIGHT** in the options menu): extended camera distance and lighting (dusk mode). The frame rate really drops in this mode.
+- **PSX mode** (shown as **DAY** in the options menu): reduced visual settings and lighting (noon mode). Better frame rate than dusk but there are still slowdowns, it's not even close to a stable 30 FPS.
 
 ## Important: the game is NOT included
 
@@ -101,7 +101,11 @@ levels, `nyc.gci`, `test1.seq`, `attract/`, `keyboard/`, `frontend/` (menu scree
 A, B or Start skips it, and holding Z at boot skips it together with the menu.
 A missing file only prints a warning during the data step. `p.gxt` (Brazilian Portuguese text) is not part of the original game: if it is
 missing from the data folder, the data step generates it from `e.gxt` + `tools/pt_br.tsv` (`tools/make_pt_gxt.py`), so the language option
-(Options page) can switch between English, Spanish and Portuguese. The game font has no tilde glyphs, so `ã`/`õ` are drawn as `â`/`ô`.
+(Options page) can switch between English, Spanish and Portuguese.
+The in-game text font (mission text, pager, HUD) is the PlayStation version's, drawn at 2x so each of its pixels covers one framebuffer row: the build
+adds it to the city `.sty` files (`tools/ps1_font.py`, glyphs in `tools/ps1_font.json`; costs ~64 KB of cartridge, no RAM). `PS1_FONT=0` keeps the PC font.
+The GTA2 title logo on the menu screens is redrawn at build time from a vector (`tools/gta2_logo.svg`) at 640x240 with exact edge coverage instead of resampling the 640x480 picture.
+The thin white and red menu fonts of `fstyle.sty` are the PlayStation ones too (`tools/ps1_menu_font.py`, glyphs captured from the PS1 menus in `tools/ps1_menu_font.json`): letters A-Z, `1`, `2`, `-` and `/` are PS1; the other digits and punctuation keep the PC shapes, snapped to the framebuffer rows. The game font has no tilde glyphs, so `ã`/`õ` are drawn as `â`/`ô`.
 
 ## Building on Windows (WSL) in one command
 
@@ -133,7 +137,7 @@ Rendering/tuning knobs (pass as `EXTRA_CFLAGS="-DNAME=value ..."`):
 | Define | Meaning |
 |---|---|
 | `N64_CAM_ZOOM_PCT=126` | Camera height. Higher = closer to the ground (sees less map, runs faster). 130 was the previous default; every 1% costs about 1.5% frame time |
-| `N64_LUZES=0` | Initial lighting (the Options menu MODE row sets it: PSX = off, PC = on). `0` = off (fastest), `1` = flat light per quad (~5% frame time, blocky), `2` = smooth per-corner light (~9%) |
+| `N64_LUZES=0` | Initial lighting (the Options menu day/night row sets it: DAY = PSX = off, NIGHT = PC = on). `0` = off (fastest), `1` = flat light per quad (~5% frame time, blocky), `2` = smooth per-corner light (~9%) |
 | `N64_LIGHT_GAIN=0.6` | Strength of coloured lights (1.0 = PC). Lower avoids blown-out red/neon tints |
 | `N64_AMBIENT_FLOOR=100` | Minimum ambient light (0-255) when lighting is on. `0` = as dark as the PC version |
 | `N64_CACHE_N=192` | Converted-texture cache slots (4 KB each). The measured peak is about 135 |
@@ -201,8 +205,8 @@ Este é um port jogável, mas ainda **em desenvolvimento**. Este fork foi testad
 | Recurso | Descrição |
 |---|---|
 | **Origem do port** | Versão PC, utilizando a lógica reconstruída pelo `gta2_re` |
-| **Modo PSX** | Configurações visuais e iluminação reduzidas (modo meio-dia). Taxa de quadros melhor que no modo entardecer, mas ainda há lentidão; está longe de 30 FPS estáveis |
-| **Modo PC** | Distância ampliada da câmera e iluminação (modo entardecer). A taxa de quadros cai bastante neste modo |
+| **Modo PSX** (aparece como **DIA** no menu) | Configurações visuais e iluminação reduzidas (modo meio-dia). Taxa de quadros melhor que no modo entardecer, mas ainda há lentidão; está longe de 30 FPS estáveis |
+| **Modo PC** (aparece como **NOITE** no menu) | Distância ampliada da câmera e iluminação (modo entardecer). A taxa de quadros cai bastante neste modo |
 | **Conteúdo** | Conteúdo da versão PC preservado, incluindo **Mad Island** |
 | **Idiomas** | Inglês, espanhol e **português brasileiro** selecionáveis no menu |
 | **PT-BR nativo** | Tradução integrada ao sistema de textos **GXT** do jogo, não uma camada gráfica sobreposta |
@@ -261,7 +265,7 @@ Ajustes do renderizador podem ser informados por `EXTRA_CFLAGS="-DNOME=valor ...
 | Definição | Função |
 |---|---|
 | `N64_CAM_ZOOM_PCT=126` | Altura/distância da câmera; valores maiores mostram menos mapa |
-| `N64_LUZES=0` | Iluminação inicial; menu MODE alterna PSX/PC |
+| `N64_LUZES=0` | Iluminação inicial; a linha DIA/NOITE do menu alterna PSX/PC |
 | `N64_LIGHT_GAIN=0.6` | Intensidade das luzes coloridas |
 | `N64_AMBIENT_FLOOR=100` | Iluminação ambiente mínima |
 | `N64_CACHE_N=192` | Slots do cache de texturas convertidas |

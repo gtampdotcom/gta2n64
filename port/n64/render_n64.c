@@ -28,6 +28,7 @@
 #include <rdpq_tex.h>
 #include <rdpq_text.h>
 #include <rdpq_font.h>
+extern int gta2_game_in_menu(void); /* game_entry.cpp: 1 while the front-end menu is open */
 extern const char *gta2_frame_text_pool(void); /* frame_n64.cpp: frases do quadro (comando kind 2) */
 
 /* libdragon builds with -ftrivial-auto-var-init=pattern (every local is filled before use); the scratch arrays of the
@@ -474,9 +475,61 @@ __attribute__((unused)) static void nfont_init(void)
 
 int gta2_n64_nfont_ready(void) { return g_nfont != NULL; }
 
+/* A small 5x7 pixel font drawn with filled rectangles (one per run of pixels): the menu's version / credit lines (text starting with
+ * "^02"; a newline starts the next line). Everything of the block goes out in ONE call. */
+static const struct { char c; uint8_t rows[7]; } k5x7[] = {
+    {'0', {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}}, {'1', {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}},
+    {'2', {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}}, {'3', {0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E}},
+    {'4', {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}}, {'5', {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}},
+    {'6', {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}}, {'7', {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}},
+    {'8', {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}}, {'9', {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}},
+    {'.', {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C}}, {'A', {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
+    {'G', {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F}}, {'T', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
+    {'V', {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}}, {'N', {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}},
+    {'P', {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}}, {'O', {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
+    {'R', {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}}, {'B', {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E}},
+    {'Y', {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04}}, {'M', {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}},
+};
+
+static void pixfont_draw(const char *s, int n, float x, float y, float sx, float sy)
+{
+    int pw = (int)(2.0f * sx + 0.5f); if (pw < 2) pw = 2;   /* one font pixel = 2 framebuffer pixels wide (a wide font like the menu's) */
+    int ph = (int)(2.0f * sy + 0.5f); if (ph < 1) ph = 1;   /* and 2 layout rows tall: in 640x480 interlaced a 1-row detail shows in only one of the two fields */
+    const int px0 = (int)(x + 0.5f);
+    int py = (int)(y + 0.5f); py &= ~1;
+    int px = px0;
+    rdpq_set_mode_fill(RGBA32(255, 255, 255, 255));
+    for (int i = 0; i < n; ++i) {
+        const char ch = s[i];
+        if (ch == '\n') { px = px0; py += 9 * ph; continue; }
+        const int dot = ch == '.';                           /* the dot sits in the middle of a 5-wide cell: pull it in so it has a gap of 1 pixel on each side */
+        const int gx = dot ? px - pw : px;
+        for (unsigned k = 0; k < sizeof(k5x7) / sizeof(k5x7[0]); ++k) {
+            if (k5x7[k].c != ch) continue;
+            for (int r = 0; r < 7; ++r) {
+                int c = 0;
+                while (c < 5) {
+                    if (!(k5x7[k].rows[r] & (0x10 >> c))) { ++c; continue; }
+                    int e = c;
+                    while (e < 5 && (k5x7[k].rows[r] & (0x10 >> e))) ++e;
+                    rdpq_fill_rectangle(gx + c * pw, py + r * ph, gx + e * pw, py + (r + 1) * ph);
+                    c = e;
+                }
+            }
+            break;
+        }
+        px += (dot ? 3 : 6) * pw;
+    }
+}
+
 /* kind 2: frase em ASCII (com ^00/^01), posicao do topo do bloco em 640x480, altura de linha do GTA 2 em 640x480 */
 static void nfont_draw(const FCmd *cm, float sx, float sy)
 {
+    if (cm->count > 3 && gta2_frame_text_pool()[cm->first] == '^' && gta2_frame_text_pool()[cm->first + 1] == '0' && gta2_frame_text_pool()[cm->first + 2] == '2') {
+        pixfont_draw(gta2_frame_text_pool() + cm->first + 3, (int)cm->count - 3, (float)cm->rect[0] * (1.0f / 256.0f) * sx,
+                     ((float)cm->rect[1] * (1.0f / 256.0f) + 4.0f) * sy, sx, sy);
+        return;
+    }
     if (!g_nfont || cm->count == 0) return;
     if (g_nf_lh <= 0.0f) {
         rdpq_font_gmetrics_t ga, gg;
@@ -1114,7 +1167,12 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
         } else rdpq_detach_show();
     }
 #else
-    rdpq_detach_show();
+    if (gta2_game_in_menu()) {
+        /* menus: show the frame only when the RDP has finished it (the last things drawn, the small text at the bottom, were
+           otherwise shown half drawn); the game keeps the CPU/RDP overlap */
+        rdpq_detach_wait();
+        display_show(disp);
+    } else rdpq_detach_show();
 #endif
     ++g_frames;
 #ifdef N64_PROF

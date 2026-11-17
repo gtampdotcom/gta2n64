@@ -824,7 +824,7 @@ index 8d11ea67..2359f866 100644
      x += other.x;
      y += other.y;
 diff --git a/Source/Frontend.cpp b/Source/Frontend.cpp
-index 22c45bf9..630b51c0 100644
+index 22c45bf9..1ead7145 100644
 --- a/Source/Frontend.cpp
 +++ b/Source/Frontend.cpp
 @@ -37,6 +37,100 @@
@@ -966,7 +966,7 @@ index 22c45bf9..630b51c0 100644
          if (field_110_state == FrontendState::User_Typing_New_Player_Name_3)
          {
              // player typing a name
-@@ -791,6 +902,16 @@ void Frontend::GetOptionText_4B3AF0(u16 menu_page_idx, u16 option_idx, wchar_t**
+@@ -791,6 +902,21 @@ void Frontend::GetOptionText_4B3AF0(u16 menu_page_idx, u16 option_idx, wchar_t**
              swprintf(gTmpWideStr_67C7D8, L"%s", gPlyDat_6FEAC0->field_26A0_plyr_stats[plyr_idx].field_90_strPlayerName);
          }
      }
@@ -977,13 +977,46 @@ index 22c45bf9..630b51c0 100644
 +    }
 +    else if (menu_page_idx == MENUPAGE_15 && option_idx == 3)
 +    {
-+        swprintf(gTmpWideStr_67C7D8, L"%s %s", pOption->field_6_option_name_str, pOption->field_6E_horizontal_selected_idx ? L"PC" : L"PSX");
++        // the two presentation modes are shown by what they look like: PSX = noon (DAY), PC = dusk (NIGHT)
++        const char lg = gText_0x14_704DFC->field_10_lang_code;
++        const bool es = lg == 's';
++        const bool pt = lg == 'p';
++        swprintf(gTmpWideStr_67C7D8, L"%s",
++                 pOption->field_6E_horizontal_selected_idx ? (es ? L"NOCHE" : (pt ? L"NOITE" : L"NIGHT")) : ((es || pt) ? L"DIA" : L"DAY"));
 +    }
 +#endif
      else if (menu_page_idx == MENUPAGE_VIEW_HIGH_SCORE && option_idx == 0)
      {
          swprintf(gTmpWideStr_67C7D8, L"%s", gText_0x14_704DFC->Find_5B5F90("hi_for"));
-@@ -1155,6 +1276,14 @@ void Frontend::DrawMenu_4AD140()
+@@ -989,6 +1115,9 @@ EXTERN_GLOBAL(s32, gGTA2VersionMinor_708284);
+ 
+ // sub_457920 in 9.6f
+ // https://decomp.me/scratch/jchxT
++#ifdef N64
++extern "C" void gta2_frame_text(const char* utf8, int nbytes, float x, float y, float lineRef, int nlines);
++#endif
+ MATCH_FUNC(0x4AD140)
+ void Frontend::DrawMenu_4AD140()
+ {
+@@ -1002,7 +1131,17 @@ void Frontend::DrawMenu_4AD140()
+     if (field_132_current_page_idx == MENUPAGE_START_MENU)
+     {
+         swprintf(tmpBuff_67BD9C, L"GTA2 V%d.%d", gGTA2VersionMajor_708280, gGTA2VersionMinor_708284);
++#ifdef N64
++        {
++            // N64: two small lines at the bottom, the version and who ported the game, drawn by the renderer in a 5x7 pixel font
++            // (render_n64.c, text starting with "^02"; one call for both lines)
++            char ver[80];
++            const int n = snprintf(ver, sizeof(ver), "^02GTA2 V%d.%d\nN64 PORT BY GTAMP V0.2", (int)gGTA2VersionMajor_708280, (int)gGTA2VersionMinor_708284);
++            gta2_frame_text(ver, n, 300.0f, 432.0f, 14.0f, 1);
++        }
++#else
+         DrawText_4B87A0(tmpBuff_67BD9C, 300, 460, font_type_703C14, 1);
++#endif
+     }
+ 
+     if (field_132_current_page_idx == MENUPAGE_PLAY)
+@@ -1155,6 +1294,14 @@ void Frontend::DrawMenu_4AD140()
  
              x_pos = pMenuOption->field_2_x_pos;
              y_pos = pMenuOption->field_4_y_pos;
@@ -998,7 +1031,7 @@ index 22c45bf9..630b51c0 100644
  
              if (option_idx == pMenuPage->field_BC6_current_option_idx)
              {
-@@ -1652,6 +1781,14 @@ void Frontend::read_menu_input_4AFEB0()
+@@ -1652,6 +1799,14 @@ void Frontend::read_menu_input_4AFEB0()
          field_C9CD_right_pressed = right && !field_C9D4_right_key_down;
          field_C9D4_right_key_down = right;
  
@@ -1013,7 +1046,7 @@ index 22c45bf9..630b51c0 100644
          const u8 returnKey = field_8_keys[DIK_RETURN] & 0x80;
          field_C9D0_return_pressed = returnKey && !field_C9D7_return_key_down;
          field_C9D7_return_key_down = returnKey;
-@@ -1750,6 +1887,12 @@ void Frontend::UpdateMenuScreen_4B6780()
+@@ -1750,6 +1905,12 @@ void Frontend::UpdateMenuScreen_4B6780()
          {
              field_EE08_menu_screen = Credits_17;
          }
@@ -1026,7 +1059,7 @@ index 22c45bf9..630b51c0 100644
          else
          {
              field_EE08_menu_screen = PlayArea1_7;
-@@ -1779,7 +1922,11 @@ void Frontend::ManageCredits_4B7A10()
+@@ -1779,7 +1940,11 @@ void Frontend::ManageCredits_4B7A10()
      {
          if (!field_C9B3_key_held)
          {
@@ -1038,7 +1071,7 @@ index 22c45bf9..630b51c0 100644
              return;
          }
      }
-@@ -1798,7 +1945,11 @@ void Frontend::ManageCredits_4B7A10()
+@@ -1798,7 +1963,11 @@ void Frontend::ManageCredits_4B7A10()
              {
                  if (++field_1EB38_credits_line_idx == 600)
                  {
@@ -1050,7 +1083,7 @@ index 22c45bf9..630b51c0 100644
                      return;
                  }
                  if ((field_1EB34_credits_ypos += Fix16(field_EE0E_credits.field_2_lines[field_1EB38_credits_line_idx].field_4_y_gap)) > 262124)
-@@ -1904,7 +2055,11 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -1904,7 +2073,11 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
                      Start_GTA2Manager_5E4DE0();
                      break;
                  case MENUPAGE_QUIT: // 258
@@ -1062,7 +1095,7 @@ index 22c45bf9..630b51c0 100644
                      break;
                  case MENUPAGE_GET_READY_TO_PLAY: // 264
                      stage_main_idx = gGameSession_67E8E0.GetMainStageIdx_4C5980();
-@@ -1936,6 +2091,12 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -1936,6 +2109,12 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
              }
              snd1_67D818.field_0_object_type = 5;
          }
@@ -1075,7 +1108,7 @@ index 22c45bf9..630b51c0 100644
          else if (field_132_current_page_idx == MENUPAGE_PLAY && pMenuPage->field_BC6_current_option_idx == 0) // player
          {
              field_110_state = FrontendState::User_Typing_New_Player_Name_3;
-@@ -1958,6 +2119,9 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -1958,6 +2137,9 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
              case MENUPAGE_PARENTAL_CONTROL:
                  ChangeMenuPage_4B3170(MENUPAGE_CREDITS);
                  break;
@@ -1085,7 +1118,7 @@ index 22c45bf9..630b51c0 100644
              case MENUPAGE_PLAY:
              case MENUPAGE_DEAD:
              case MENUPAGE_AREA_COMPLETE:
-@@ -1971,7 +2135,11 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -1971,7 +2153,11 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
                  ChangeMenuPage_4B3170(MENUPAGE_PLAY);
                  break;
              default:
@@ -1097,7 +1130,7 @@ index 22c45bf9..630b51c0 100644
                  break;
          }
          snd1_67D818.field_0_object_type = 6;
-@@ -2016,6 +2184,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -2016,6 +2202,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
                      snd1_67D818.field_0_object_type = 3;
                  }
              }
@@ -1114,7 +1147,7 @@ index 22c45bf9..630b51c0 100644
              pMenuPage = pMenuPageSaved;
          }
          else if (field_132_current_page_idx == MENUPAGE_PLAY)
-@@ -2058,6 +2236,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -2058,6 +2254,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
                      snd1_67D818.field_0_object_type = 4;
                  }
              }
@@ -1131,7 +1164,7 @@ index 22c45bf9..630b51c0 100644
              pMenuPage = pMenuPageSaved;
          }
          else if (field_132_current_page_idx == MENUPAGE_PLAY)
-@@ -3104,6 +3292,11 @@ void Frontend::DrawBackground_4B6E10()
+@@ -3104,6 +3310,11 @@ void Frontend::DrawBackground_4B6E10()
      else
      {
          GetTgaIdxsForMenuScreen_4B6B00(field_EE08_menu_screen, &tga_idx, reinterpret_cast<u8*>(&ret));
@@ -1143,7 +1176,7 @@ index 22c45bf9..630b51c0 100644
  
          // Left side
          s32 blitRet = pgbh_BlitImage(tgaArray_61F0C8[tga_idx].field_84_img, 0, 0, 278, 480, 0, 0);
-@@ -3229,10 +3422,26 @@ void Frontend::GetTgaIdxsForMenuScreen_4B6B00(u8 screen, u8* pTgaIdx, u8* pTgaId
+@@ -3229,10 +3440,26 @@ void Frontend::GetTgaIdxsForMenuScreen_4B6B00(u8 screen, u8* pTgaIdx, u8* pTgaId
      }
  }
  
@@ -1170,7 +1203,7 @@ index 22c45bf9..630b51c0 100644
  
      FILE* hFile = crt::fopen(tgaArray_61F0C8[idx].field_0_tga_name, "rb");
      if (!hFile)
-@@ -3313,8 +3522,17 @@ Frontend::Frontend()
+@@ -3313,8 +3540,17 @@ Frontend::Frontend()
      field_C9D6_down_key_down = 0;
      field_C9D3_left_key_down = 0;
      field_C9D4_right_key_down = 0;
@@ -1188,7 +1221,7 @@ index 22c45bf9..630b51c0 100644
      field_C9D9_delete_key_down = 0;
      field_10C_bKeyboardAcquireFailed = false;
      field_108_winmain_next_state = Run_Frontend_2;
-@@ -3534,7 +3752,11 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
+@@ -3534,11 +3770,23 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
      wcsncpy(pPage->field_4_options_array[1].field_6_option_name_str,
              gText_0x14_704DFC->Find_5B5F90("options"),
              0x32u);
@@ -1200,7 +1233,19 @@ index 22c45bf9..630b51c0 100644
      pPage->field_4_options_array[2].field_0_option_type = ENTERABLE_1;
      pPage->field_4_options_array[2].field_2_x_pos = 300;
      pPage->field_4_options_array[2].field_4_y_pos = 290;
-@@ -4096,6 +4318,59 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
++#ifdef N64
++    {
++        // N64: there is nothing to quit to; this entry shows the credits (see MENUPAGE_QUIT below)
++        const char lg = gText_0x14_704DFC->field_10_lang_code;
++        wcsncpy(pPage->field_4_options_array[2].field_6_option_name_str, (lg == 's' || lg == 'p') ? L"CREDITOS" : L"CREDITS", 0x32u);
++    }
++#else
+     wcsncpy(pPage->field_4_options_array[2].field_6_option_name_str, gText_0x14_704DFC->Find_5B5F90("quit"), 0x32u);
++#endif
+     pPage->field_4_options_array[2].field_80_menu_page_target = 9;
+     pPage->field_B8A_option_states[0].field_0_unused = 280;
+     pPage->field_B8A_option_states[0].field_2_unused = 258;
+@@ -4096,6 +4344,59 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
      pPage->field_B8A_option_states[0].field_2_unused = 348; //  TODO: check for wrong var
      pPage->field_BC6_current_option_idx = 0;
      pPage->field_BC8_default_option_idx = 0;
@@ -1260,7 +1305,7 @@ index 22c45bf9..630b51c0 100644
      field_EE0E_credits.LoadCredits_483F20();
  }
  
-@@ -5093,6 +5368,39 @@ void Frontend::LoadMapFilenamesFromSvg_4B4EC0()
+@@ -5093,6 +5394,39 @@ void Frontend::LoadMapFilenamesFromSvg_4B4EC0()
      }
  
      char_type path[256];
@@ -1378,7 +1423,7 @@ index e4478ce3..7c29ec3f 100644
  MATCH_FUNC(0x4B9DE0)
  Game::Game(u8 max_players, s8 player_idx)
 diff --git a/Source/Hud.cpp b/Source/Hud.cpp
-index 6049e6a5..be5d3ef5 100644
+index 6049e6a5..bbab549d 100644
 --- a/Source/Hud.cpp
 +++ b/Source/Hud.cpp
 @@ -28,6 +28,14 @@
@@ -1503,7 +1548,32 @@ index 6049e6a5..be5d3ef5 100644
  
      s32 ypos = gGameSession_67E8E0.IsBonusStage_4C59A0() ? 36 : 104;
      for (s32 i = 0; i < GTA2_COUNTOF(field_0_pagers_array); i++)
-@@ -2398,6 +2436,11 @@ void Hud_Brief::UpdateBrief_5D44D0()
+@@ -2283,6 +2321,10 @@ void Hud_Brief::StartCurrentBrief_5D39D0()
+     field_6F8_curr_briefs->field_10_was_displayed = 0;
+ }
+ 
++#ifdef N64
++extern "C" void gta2_n64_rect(float x0, float y0, float x1, float y1, u32 rgba);
++#endif
++
+ // https://decomp.me/scratch/exFU8
+ MATCH_FUNC(0x5d3b80)
+ void Hud_Brief::DrawBrief_5D3B80()
+@@ -2301,6 +2343,13 @@ void Hud_Brief::DrawBrief_5D3B80()
+ 
+         // u32: converts with the Fix16(u32) constructor, whose out-of-line copy is 0x4926F0
+         u32 first_line_ypos = 480 - GetLineSpacingFromFontType_5D7700_inlined(gBriefFont_7065C4) * field_508_num_lines;
++#ifdef N64
++        {
++            // N64: dark translucent panel behind the text (to the right of the face) (as on the PlayStation), so the text stays readable over the map
++            const s32 panel_w = Frontend::GetMaxTextWidth_5D8990(field_0_str, gBriefFont_7065C4);
++            gta2_n64_rect(58.0f, (f32)first_line_ypos - 16.0f, (f32)(64 + panel_w + 12), 490.0f, 0u | (4u << 8) | (14u << 16) | (150u << 24));
++        }
++#endif
+         DrawText_5D7720(field_0_str, // str
+                         (64), // x
+                         first_line_ypos, // y
+@@ -2398,6 +2447,11 @@ void Hud_Brief::UpdateBrief_5D44D0()
                  field_514_face_anim_char_idx = 0;
              }
  
@@ -1515,7 +1585,7 @@ index 6049e6a5..be5d3ef5 100644
              const s32 ary_val = field_0_str[field_514_face_anim_char_idx];
              if (!(ary_val % 20)) // (, <, P, d, x
              {
-@@ -2407,6 +2450,7 @@ void Hud_Brief::UpdateBrief_5D44D0()
+@@ -2407,6 +2461,7 @@ void Hud_Brief::UpdateBrief_5D44D0()
              {
                  field_50C_face_variant = 2 * (ary_val % 2); // mouth open and closed, but with open eyes
              }
@@ -1523,7 +1593,7 @@ index 6049e6a5..be5d3ef5 100644
          }
  
          field_6F8_curr_briefs->field_10_was_displayed = 1;
-@@ -2917,7 +2961,8 @@ void Hud_PlayerStats::DrawPlayerStats_5D5C80()
+@@ -2917,7 +2972,8 @@ void Hud_PlayerStats::DrawPlayerStats_5D5C80()
          DrawAmmo_5D6060(ammo_idx, ammo);
      }
  
@@ -1533,7 +1603,7 @@ index 6049e6a5..be5d3ef5 100644
      for (s32 powerup_idx = 0; powerup_idx < 17; powerup_idx++)
      {
          u16 powerup_timer = pPlayer->field_6F4_power_up_timers[powerup_idx];
-@@ -2928,7 +2973,7 @@ void Hud_PlayerStats::DrawPlayerStats_5D5C80()
+@@ -2928,7 +2984,7 @@ void Hud_PlayerStats::DrawPlayerStats_5D5C80()
      }
  
      RollingDigitCounter* pScoreDigits = pPlayer->field_2D4_scores.GetScoreDigits_592360();
@@ -1542,7 +1612,7 @@ index 6049e6a5..be5d3ef5 100644
  
      // Now draw $ symbol
  
-@@ -3058,7 +3103,7 @@ void __stdcall DrawAmmo_5D6060(s16 ammo_idx, u8 ammo_count)
+@@ -3058,7 +3114,7 @@ void __stdcall DrawAmmo_5D6060(s16 ammo_idx, u8 ammo_count)
  
          DrawFigureScaled_5D7670(sprite_types_enum::user_6,
                                  ammo_idx + 85,
@@ -1551,7 +1621,7 @@ index 6049e6a5..be5d3ef5 100644
                                  height / 2 + 44,
                                  kAngZero_706610,
                                  palette_types_enum::sprites_2,
-@@ -3077,7 +3122,7 @@ void __stdcall DrawAmmo_5D6060(s16 ammo_idx, u8 ammo_count)
+@@ -3077,7 +3133,7 @@ void __stdcall DrawAmmo_5D6060(s16 ammo_idx, u8 ammo_count)
                  swprintf(tmpBuff_67BD9C, L"%d", ammo_count);
              }
              DrawText_5D7720(tmpBuff_67BD9C,
@@ -1560,7 +1630,7 @@ index 6049e6a5..be5d3ef5 100644
                              82,
                              gPlayerStatsFont_70646C,
                              palette_types_enum::font_remaps_8,
-@@ -3201,12 +3246,310 @@ void Hud_PauseScreen::UpdatePauseSection_5D6300()
+@@ -3201,12 +3257,310 @@ void Hud_PauseScreen::UpdatePauseSection_5D6300()
  }
  
  // https://decomp.me/scratch/Uq97l
@@ -1871,7 +1941,7 @@ index 6049e6a5..be5d3ef5 100644
      if (gGame_0x40_67E008->IsPaused_416BC0() && !gGame_0x40_67E008->field_38_local_player->field_78A_show_quit_message)
      {
          DrawFigureScaled_5D7670(sprite_types_enum::user_6, 134, 227, 180, kAngZero_706610, palette_types_enum::sprites_2, 0, 0, 0);
-@@ -3220,6 +3563,7 @@ void Hud_PauseScreen::DrawPause_5D63B0()
+@@ -3220,6 +3574,7 @@ void Hud_PauseScreen::DrawPause_5D63B0()
          u32 y_offset = (gText_0x14_704DFC->field_10_lang_code != 'j') ? 158 : 164;
  
          DrawText_5D7720(pPauseText, (640 - max_width) / 2, y_offset, gPauseFont_7063F8, palette_types_enum::sprites_2, 0, 0, 0);
@@ -1879,7 +1949,7 @@ index 6049e6a5..be5d3ef5 100644
  
          if (!gGameSession_67E8E0.IsBonusStage_4C59A0())
          {
-@@ -3342,6 +3686,9 @@ void Hud_PauseScreen::DrawPause_5D63B0()
+@@ -3342,6 +3697,9 @@ void Hud_PauseScreen::DrawPause_5D63B0()
                  u16 sprite_idx = gGtx_0x106C_703DD4->GetSpriteTrueIndex_5AA460(sprite_type, sprite_pal);
                  s32 icon_width = gGtx_0x106C_703DD4->get_sprite_width_420220(sprite_idx) + 10;
                  text_xpos = (640 - icon_width - max_width_2) / 2;
@@ -1889,7 +1959,7 @@ index 6049e6a5..be5d3ef5 100644
                  DrawFigureScaled_5D7670(sprite_type,
                                          sprite_pal,
                                          text_xpos + icon_width / 2,
-@@ -3351,6 +3698,7 @@ void Hud_PauseScreen::DrawPause_5D63B0()
+@@ -3351,6 +3709,7 @@ void Hud_PauseScreen::DrawPause_5D63B0()
                                          0,
                                          0,
                                          0);
@@ -1897,7 +1967,7 @@ index 6049e6a5..be5d3ef5 100644
                  text_xpos += icon_width;
              }
              else
-@@ -3358,35 +3706,50 @@ void Hud_PauseScreen::DrawPause_5D63B0()
+@@ -3358,35 +3717,50 @@ void Hud_PauseScreen::DrawPause_5D63B0()
                  text_xpos = (640 - max_width_2) / 2;
              }
              // (u32): Fix16(u32) constructor (0x4926F0), the 220 goes through Fix16(s32) (0x4369F0)
@@ -1912,7 +1982,7 @@ index 6049e6a5..be5d3ef5 100644
  
 +#ifdef N64
 +// N64: HUD layer (frame_n64.cpp). HUD(ax, ay, which, call) wraps one element: scaled up around (ax, ay) in 640x480 units
-+// (which: 2 = top-corner size, 1 = large, 0 = unscaled), always kept inside the TV-safe area. World-placed markers (arrows, names) are left alone.
++// (which: 3 = pixel-exact for the PS1 font, 2 = top-corner size, 1 = large, 0 = unscaled), always kept inside the TV-safe area. World-placed markers (arrows, names) are left alone.
 +extern "C" void gta2_n64_hud_begin(float ax, float ay, int which);
 +extern "C" void gta2_n64_hud_end(void);
 +extern "C" float gta2_n64_hud_scale(int which);
@@ -1945,9 +2015,9 @@ index 6049e6a5..be5d3ef5 100644
 +        HUD(640, 0, 2, field_1108_health.DrawHealth_5D0260());
 +        HUD(320, 0, 1, field_4C_zone_name.DrawZoneName_5D5900());
 +        HUD(320, 240, 1, field_0_car_name.DrawCarName_5D4A10());
-+        HUD(320, 0, 1, field_1080_pickup_text.Draw_5D5420());
-+        HUD(0, 480, 1, field_DC_brief.DrawBrief_5D3B80());
-+        HUD(0, 0, 1, field_620_pagers.DrawPagers_5D3040());
++        HUD(320, 0, 3, field_1080_pickup_text.Draw_5D5420());
++        HUD(0, 480, 3, field_DC_brief.DrawBrief_5D3B80());
++        HUD(0, 0, 3, field_620_pagers.DrawPagers_5D3040());
 +        HUD(320, 240, 0, field_650_texts.Service_5D2010());
          field_1F18_arrows.DrawArrows_5D0E90();
 -        field_12F0_mp_message.Draw_5D56D0();
@@ -1955,7 +2025,7 @@ index 6049e6a5..be5d3ef5 100644
 -        field_12E4_pause_screen.DrawPause_5D63B0();
 -        field_2A25_chat_input.DrawChatMessages_5D16B0();
 -        field_12EC_quit_message.DrawQuitMessage_5D1430();
-+        HUD(320, 0, 1, field_12F0_mp_message.Draw_5D56D0());
++        HUD(320, 0, 3, field_12F0_mp_message.Draw_5D56D0());
 +        HUD(320, 240, 0, field_111C_message.DrawMessage_5D1940());
 +        HUD(320, 240, 0, field_12E4_pause_screen.DrawPause_5D63B0());
 +        HUD(0, 480, 0, field_2A25_chat_input.DrawChatMessages_5D16B0());
@@ -1963,13 +2033,13 @@ index 6049e6a5..be5d3ef5 100644
      }
  }
  
-@@ -3399,6 +3762,10 @@ void Hud::UpdatePauseSection_5D69C0()
+@@ -3399,6 +3773,10 @@ void Hud::UpdatePauseSection_5D69C0()
  MATCH_FUNC(0x5d69d0)
  void Hud::UpdateHUD_5D69D0()
  {
 +#ifdef N64
 +    // brief text is drawn N64_HUD_SCALE times bigger from x = 64: wrap it so the scaled lines still end at x = 640
-+    MaxLineWidth_62689C = (s32)(640.0f / gta2_n64_hud_scale(1)) - 64;
++    MaxLineWidth_62689C = (s32)(640.0f / gta2_n64_hud_scale(3)) - 64;
 +#endif
      field_1118_player_stats.UpdateRollingDigits_5D6290();
      field_110C_under_roof_arrow_marker.Update_5CF730();
@@ -4161,10 +4231,20 @@ index c65c9554..ce2d81d1 100644
  EXTERN_GLOBAL(SpriteManager_8*, gSpriteManager_703820);
  
 diff --git a/Source/winmain.cpp b/Source/winmain.cpp
-index 3b32ddac..39189c6e 100644
+index 3b32ddac..0d6c33e6 100644
 --- a/Source/winmain.cpp
 +++ b/Source/winmain.cpp
-@@ -1469,6 +1469,11 @@ EXPORT void __stdcall do_network_and_local_inputs_4DAF30()
+@@ -63,6 +63,9 @@
+ #include "sprite.hpp"
+ #include "TextTable.hpp"
+ 
++#ifdef N64
++extern "C" void gta2_n64_display_mode(int hires); // main_n64.c: 640x480i menus / 640x240 game
++#endif
+ DEFINE_GLOBAL(u8, gNetDisconnectPlayersBits_6F56B8, 0x6F56B8); // TODO: move
+ DEFINE_GLOBAL(u32, gNetworkPlayerIdx_6F56C8, 0x6F56C8); // TODO: move
+ DEFINE_GLOBAL(u32, gPlayerQuit_6F5AEC, 0x6F5AEC); // TODO: move
+@@ -1469,6 +1472,11 @@ EXPORT void __stdcall do_network_and_local_inputs_4DAF30()
  }
  
  // todo move to another file for ordering
@@ -4176,7 +4256,7 @@ index 3b32ddac..39189c6e 100644
  MATCH_FUNC(0x4DA850)
  EXPORT bool RunGameFrame_4DA850()
  {
-@@ -1513,7 +1518,14 @@ EXPORT bool RunGameFrame_4DA850()
+@@ -1513,7 +1521,14 @@ EXPORT bool RunGameFrame_4DA850()
                  do_network_and_local_inputs_4DAF30();
                  bInputsPending_6F5760 = false;
              }
@@ -4191,7 +4271,7 @@ index 3b32ddac..39189c6e 100644
              s32 frame_ms = gGame_0x40_67E008->GetFrameDurationMs_4B8BB0();
              bForceGameUpdate_6F5880 = false;
              gMatchStartTime_6F5A28 += frame_ms;
-@@ -1522,7 +1534,13 @@ EXPORT bool RunGameFrame_4DA850()
+@@ -1522,7 +1537,13 @@ EXPORT bool RunGameFrame_4DA850()
          }
          else if (gFramesSinceDraw_6F58D8)
          {
@@ -4205,7 +4285,7 @@ index 3b32ddac..39189c6e 100644
              gFramesSinceDraw_6F58D8 = 0;
              drew_frame = true;
          }
-@@ -1569,6 +1587,11 @@ GUID IID_IDirectDrawSurface4_ = {0x0B2B8630, 0xAD35, 0x11D0, 0x8E, 0xA6, 0x00, 0
+@@ -1569,6 +1590,11 @@ GUID IID_IDirectDrawSurface4_ = {0x0B2B8630, 0xAD35, 0x11D0, 0x8E, 0xA6, 0x00, 0
  MATCH_FUNC(0x4C4EC0)
  EXPORT void __stdcall GetDirectXVersion_4C4EC0(u32* pDXVer, u32* osKind)
  {
@@ -4217,7 +4297,7 @@ index 3b32ddac..39189c6e 100644
      HMODULE hDInput;
      FARPROC pDirectInputCreateA;
      HMODULE hDDraw;
-@@ -1737,6 +1760,7 @@ EXPORT void __stdcall GetDirectXVersion_4C4EC0(u32* pDXVer, u32* osKind)
+@@ -1737,6 +1763,7 @@ EXPORT void __stdcall GetDirectXVersion_4C4EC0(u32* pDXVer, u32* osKind)
      {
          *pDXVer = 0x601;
      }
@@ -4225,7 +4305,7 @@ index 3b32ddac..39189c6e 100644
  }
  
  const char_type* kDefaultDllNames_626A00[2] = {"d3ddll.dll", "dmavideo.dll"};
-@@ -1932,6 +1956,10 @@ EXPORT void __stdcall ParseCommandLine_4DA320(char_type* pCommandLine)
+@@ -1932,6 +1959,10 @@ EXPORT void __stdcall ParseCommandLine_4DA320(char_type* pCommandLine)
  MATCH_FUNC(0x5E4DE0)
  EXPORT void Start_GTA2Manager_5E4DE0()
  {
@@ -4236,7 +4316,7 @@ index 3b32ddac..39189c6e 100644
      ShowWindow(gHwnd_707F04, SW_SHOWMINNOACTIVE);
      HANDLE hMutex = OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "GBH_BOB_MUTEX");
      if (hMutex)
-@@ -2233,6 +2261,13 @@ EXPORT LRESULT __stdcall WindowProc_5E4EE0(HWND hWnd, UINT Msg, WPARAM wParam, L
+@@ -2233,6 +2264,13 @@ EXPORT LRESULT __stdcall WindowProc_5E4EE0(HWND hWnd, UINT Msg, WPARAM wParam, L
  }
  
  MATCH_FUNC(0x5E53F0)
@@ -4250,7 +4330,7 @@ index 3b32ddac..39189c6e 100644
  s32 __stdcall WinMain_5E53F0(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, s32 nShowCmd)
  {
      gHInstance_708220 = hInstance;
-@@ -2355,6 +2390,10 @@ s32 __stdcall WinMain_5E53F0(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR
+@@ -2355,6 +2393,10 @@ s32 __stdcall WinMain_5E53F0(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR
          gRegistry_6FF968.Clear_Or_Delete_Sound_Setting_586BF0("do_3d_sound", gRoot_sound_66B038.Get3DSound_40F180());
      }
  
@@ -4261,7 +4341,26 @@ index 3b32ddac..39189c6e 100644
      // Game loop
  
      bool bQuit = false;
-@@ -2516,6 +2555,196 @@ s32 __stdcall WinMain_5E53F0(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR
+@@ -2411,12 +2453,18 @@ s32 __stdcall WinMain_5E53F0(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR
+                         }
+                         else if (t == Start_Game_3)
+                         {
++#ifdef N64
++                            gta2_n64_display_mode(0); // N64: the menus may run in 640x480i; a game needs the memory of the 240p mode
++#endif
+                             Frontend::destroy_4AD070();
+                             bDoFrontEnd_626B68 = false;
+                             break; // go to the beginning
+                         }
+                         else if (t == Start_Replay_4)
+                         {
++#ifdef N64
++                            gta2_n64_display_mode(0);
++#endif
+                             Frontend::destroy_4AD070();
+                             bDoFrontEnd_626B68 = false;
+                             bReplayMode_6F5B71 = true;
+@@ -2516,6 +2564,202 @@ s32 __stdcall WinMain_5E53F0(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR
      return 0;
  }
  
@@ -4336,6 +4435,9 @@ index 3b32ddac..39189c6e 100644
 +                        }
 +                        else if (t == Start_Game_3)
 +                        {
++#ifdef N64
++                            gta2_n64_display_mode(0);
++#endif
 +                            Frontend::destroy_4AD070();
 +                            bDoFrontEnd_626B68 = false;
 +                            sPortRestart_Gta2 = 1;
@@ -4343,6 +4445,9 @@ index 3b32ddac..39189c6e 100644
 +                        }
 +                        else if (t == Start_Replay_4)
 +                        {
++#ifdef N64
++                            gta2_n64_display_mode(0);
++#endif
 +                            Frontend::destroy_4AD070();
 +                            bDoFrontEnd_626B68 = false;
 +                            bReplayMode_6F5B71 = true;
@@ -4458,7 +4563,7 @@ index 3b32ddac..39189c6e 100644
  // TODO: order
  MATCH_FUNC(0x4DA740)
  EXPORT void __stdcall Shutdown_4DA740()
-@@ -2630,6 +2859,11 @@ EXPORT bool __stdcall Start_NetworkGame_5E5A30(HINSTANCE hInstance)
+@@ -2630,6 +2874,11 @@ EXPORT bool __stdcall Start_NetworkGame_5E5A30(HINSTANCE hInstance)
  MATCH_FUNC(0x5E5D60)
  EXPORT void __stdcall GetGTA2Version_5E5D60(s32* pVerMinor, s32* pVerMajor)
  {
@@ -4470,7 +4575,7 @@ index 3b32ddac..39189c6e 100644
      DWORD dwHandle;
      DWORD dwSize = GetFileVersionInfoSizeA("GTA2.EXE", &dwHandle);
      BYTE* pAlloc = new BYTE[dwSize];
-@@ -2643,4 +2877,5 @@ EXPORT void __stdcall GetGTA2Version_5E5D60(s32* pVerMinor, s32* pVerMajor)
+@@ -2643,4 +2892,5 @@ EXPORT void __stdcall GetGTA2Version_5E5D60(s32* pVerMinor, s32* pVerMajor)
          *pVerMajor = pFileInfo->dwProductVersionMS & 0xFFFF;
      }
      delete[] pAlloc;
