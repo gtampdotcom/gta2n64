@@ -370,36 +370,80 @@ static void microbench(void)
 #ifndef N64_OVERSCAN_Y
 #define N64_OVERSCAN_Y 28
 #endif
+/* Display modes, chosen at run time from the Options page (Frontend.cpp):
+ *   game:  0 = 640x240 (default), 1 = 320x240 (lighter: fewer pixels to fill, more heap left)
+ *   menus: 0 = same as the game, 1 = 640x480 interlaced (the art and the PC font are drawn for 640x480; needs 1.2 MB of buffers)
+ * Called every frame with "is the menu open" and by the engine just before a game starts (winmain.cpp). A mode is only
+ * entered when the heap has room for its two framebuffers (the very allocation display_init() makes is tried first);
+ * otherwise the game's own mode stays (the menu pictures are stored for 480 rows and are scaled down by the renderer then). */
+#ifndef N64_MENU_480I_DEFAULT
 #ifdef N64_RES_MENU_480I
-/* Menus in 640x480 interlaced (the art and the PC font are drawn for 640x480), the game in 640x240: the 480i framebuffers need
- * 614 KB more heap than the game can spare. Called every frame with "is the menu open" and by the engine just before a game
- * starts (winmain.cpp). The switch to 480i is only made when the heap has room for the two bigger buffers; otherwise the menus
- * stay in 240p (the menu pictures are stored for 480 rows and are scaled down by the renderer then). */
-static int s_hires, s_hires_tried;
-void gta2_n64_display_mode(int hires)
-{
-    if (hires == s_hires) return;
-    if (hires) { if (s_hires_tried) return; s_hires_tried = 1; } else { s_hires_tried = 0; }
-    rspq_wait();
-    display_close();
-    int ok = 0;
-    if (hires) {
-        /* the very allocation display_init() will make: two uncached, 64-byte aligned 640x480 RGBA16 buffers */
-        void *a = malloc_uncached_aligned(64, 640 * 480 * 2);
-        void *b = a ? malloc_uncached_aligned(64, 640 * 480 * 2) : NULL;
-        if (a && b) ok = 1;
-        if (b) free_uncached(b);
-        if (a) free_uncached(a);
-        debugf("[res] 480i %s (free=%d)\n", ok ? "fits" : "does not fit", mallinfo().fordblks);
-    }
-    if (ok) display_init(RESOLUTION_640x480, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
-    else display_init(RESOLUTION_640x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
-    vi_set_borders((vi_borders_t){ N64_OVERSCAN_X, N64_OVERSCAN_X, N64_OVERSCAN_Y, N64_OVERSCAN_Y });
-    s_hires = ok;
-}
+#define N64_MENU_480I_DEFAULT 1
 #else
-void gta2_n64_display_mode(int hires) { (void)hires; }
+#define N64_MENU_480I_DEFAULT 0
 #endif
+#endif
+int g_opt_game_res = 0;
+int g_opt_menu_res = N64_MENU_480I_DEFAULT;
+static int s_mode = 0, s_hires_tried; /* 0 = 640x240, 1 = 320x240, 2 = 640x480i */
+int gta2_n64_get_res_option(int which) { return which ? g_opt_menu_res : g_opt_game_res; }
+void gta2_n64_set_res_option(int which, int v) { if (which) g_opt_menu_res = v ? 1 : 0; else g_opt_game_res = v ? 1 : 0; }
+
+static int mode_fits(int w, int h)
+{
+    void *a = malloc_uncached_aligned(64, (size_t)w * h * 2);
+    void *b = a ? malloc_uncached_aligned(64, (size_t)w * h * 2) : NULL;
+    const int ok = a && b;
+    if (b) free_uncached(b);
+    if (a) free_uncached(a);
+    return ok;
+}
+
+/* The game's framebuffers are allocated once, at 640x240 (the size the game's memory budget is built around). 320x240 is a
+ * display_change() inside those same buffers, so switching the game's resolution never touches the heap (an earlier version
+ * freed and re-allocated them: the heap was too fragmented by then for two 307 KB buffers, and display_init() ran out of
+ * memory). Only the menus' 640x480 needs new buffers (display_close + display_init), done while the heap is mostly empty. */
+static int s_alloc = 0; /* what display_init() allocated: 0 = 640x240 buffers, 1 = 320x240 buffers (fallback only), 2 = 640x480 */
+static int s_border_fix;
+static void apply_borders(void) { vi_set_borders((vi_borders_t){ N64_OVERSCAN_X, N64_OVERSCAN_X, N64_OVERSCAN_Y, N64_OVERSCAN_Y }); }
+void gta2_n64_display_mode(int menu)
+{
+    /* display_change() reapplies libdragon's own borders a frame or two later: put ours back */
+    if (s_border_fix > 0) { apply_borders(); --s_border_fix; }
+    int want = (menu && g_opt_menu_res) ? 2 : (g_opt_game_res ? 1 : 0);
+    if (!menu) s_hires_tried = 0;
+    if (want == s_mode) return;
+    if (want == 2) { if (s_hires_tried) return; s_hires_tried = 1; }
+    rspq_wait();
+    const int realloc_needed = want == 2 || s_alloc == 2 || (s_alloc == 1 && want == 0);
+    int mode = want;
+    if (!realloc_needed) {
+        if (mode == 1) display_change(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
+        else display_change(RESOLUTION_640x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
+        apply_borders();
+        s_border_fix = 8;
+    } else {
+        display_close();
+        s_alloc = -1;
+        if (mode == 2 && !mode_fits(640, 480)) { debugf("[res] 480i does not fit (free=%d)\n", mallinfo().fordblks); mode = g_opt_game_res ? 1 : 0; }
+        if (mode == 2) {
+            display_init(RESOLUTION_640x480, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
+            s_alloc = 2;
+        } else if (mode_fits(640, 240)) {
+            display_init(RESOLUTION_640x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_DISABLED);
+            s_alloc = 0;
+            if (mode == 1) display_change(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
+        } else { /* no room even for those: the smaller buffers */
+            debugf("[res] 640x240 does not fit (free=%d)\n", mallinfo().fordblks);
+            display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
+            s_alloc = 1; mode = 1; g_opt_game_res = 1;
+        }
+        apply_borders();
+        s_border_fix = 8;
+    }
+    debugf("[res] display mode %d (alloc %d, free=%d)\n", mode, s_alloc, mallinfo().fordblks);
+    s_mode = mode;
+}
 
 int main(void)
 {
@@ -479,9 +523,8 @@ int main(void)
     {
         poll_input();
         const int r = gta2_game_frame();
-#ifdef N64_RES_MENU_480I
         gta2_n64_display_mode(gta2_game_in_menu());
-#endif
+
 #ifdef N64_MEMLOG
         { static unsigned fr; if ((++fr % 10) == 0) { struct mallinfo mi = mallinfo(); { extern unsigned g_smallN, g_smallB; { extern char *__heap_end, *__heap_top; extern uint32_t gta2_n64_frames(void); debugf("[mem] f=%u pres=%u arena=%d used=%d free=%d brk=%p sp=%p heap_end=%p heap_top=%p\n", fr, (unsigned)gta2_n64_frames(), mi.arena, mi.uordblks, mi.fordblks, sbrk(0), (void*)&mi, (void*)__heap_end, (void*)__heap_top); } (void)g_smallN; (void)g_smallB; } } }
 #endif

@@ -312,7 +312,7 @@ static __attribute__((noinline)) int tex_convert(N64Tex *t, float scale, float s
                 orv |= v;
                 andv &= v;
             }
-            for (int x = tw; x < pw; ++x) o[x] = 0;
+            for (int x = tw; x < pw; ++x) o[x] = o[tw - 1]; /* padding repeats the last column: bilinear at the tile edge must not blend with black (seams when zoomed out) */
         }
         any_opaque = (orv & 1) != 0;
         any_clear = !(andv & 1);
@@ -354,7 +354,7 @@ static __attribute__((noinline)) int tex_convert(N64Tex *t, float scale, float s
                 any_clear = 1;
             }
         }
-        for (int x = tw; x < pw; ++x) o[x] = 0;
+        for (int x = tw; x < pw; ++x) o[x] = o[tw - 1];
     }
 conv_done_loop:
     /* texels transparentes herdam a cor de um vizinho opaco (alfa continua 0): o bilinear nao escurece as bordas */
@@ -489,6 +489,7 @@ static const struct { char c; uint8_t rows[7]; } k5x7[] = {
     {'P', {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}}, {'O', {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
     {'R', {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}}, {'B', {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E}},
     {'Y', {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04}}, {'M', {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}},
+    {'F', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}}, {'S', {0x0E, 0x11, 0x10, 0x0E, 0x01, 0x11, 0x0E}},
 };
 
 static void pixfont_draw(const char *s, int n, float x, float y, float sx, float sy)
@@ -520,6 +521,35 @@ static void pixfont_draw(const char *s, int n, float x, float y, float sx, float
         }
         px += (dot ? 3 : 6) * pw;
     }
+}
+
+/* FPS counter (pause menu option): frames presented per second, measured over one second, drawn bottom right with the 5x7 font */
+static int g_opt_fps;
+int gta2_n64_get_fps_option(void) { return g_opt_fps; }
+void gta2_n64_set_fps_option(int v) { g_opt_fps = v ? 1 : 0; }
+static void fps_draw(float sx, float sy)
+{
+    static uint32_t t0, frames;
+    static int shown;
+    ++frames;
+    const uint32_t now = timer_ticks();
+    if (!t0) t0 = now;
+    if ((uint32_t)(now - t0) >= (uint32_t)TICKS_PER_SECOND) {
+        shown = (int)(((uint64_t)frames * TICKS_PER_SECOND + (uint32_t)(now - t0) / 2) / (uint32_t)(now - t0));
+        frames = 0;
+        t0 = now;
+    }
+    if (!g_opt_fps) return;
+    char s[16];
+    const int n = snprintf(s, sizeof(s), "%d", shown);
+    int pw = (int)(2.0f * sx + 0.5f); if (pw < 2) pw = 2;
+    int ph = (int)(2.0f * sy + 0.5f); if (ph < 1) ph = 1;
+    const int w = n * 6 * pw - pw;
+    const int x = (int)SCR_W - w - 6 * pw;   /* bottom right corner */
+    int y = (int)SCR_H - 8 * ph - 6 * ph; y &= ~1;
+    rdpq_set_mode_fill(RGBA32(0, 0, 0, 255));
+    rdpq_fill_rectangle(x - 2 * pw, y - ph, x + w + 2 * pw, y + 8 * ph);
+    pixfont_draw(s, n, (float)x, (float)y, sx, sy);
 }
 
 /* kind 2: frase em ASCII (com ^00/^01), posicao do topo do bloco em 640x480, altura de linha do GTA 2 em 640x480 */
@@ -1129,6 +1159,8 @@ void gta2_n64_present(const void *cmds_, int cmdCount, const void *verts_, int v
         ++c;
     }
 
+    fps_draw(sx, sy);
+    s_valid = 0; s_up_slot = -1; /* fps_draw changed the RDP mode */
 #ifdef N64_PROF
     {   /* every 32nd frame: wait for the RDP and checksum the finished framebuffer (pixel-exact check of the renderer itself) */
         extern uint32_t gta2_n64_prof_fbhash;

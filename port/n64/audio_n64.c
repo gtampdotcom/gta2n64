@@ -55,6 +55,7 @@ typedef struct {
     int id;               /* handle do Miles (0 = livre) */
     uint32_t order;       /* para roubar o canal mais antigo */
     uint32_t upd_t;       /* ticks da ultima atualizacao de volume/pan/tom */
+    uint8_t oneshot;      /* 1 = efeito que acaba sozinho (tiro, batida); 0 = em loop (motor, sirene) */
 } Voice;
 
 static Wave g_wave[NWAVE];
@@ -283,17 +284,27 @@ void gta2_n64_sfx_start(int id, const void *data, int len, int rate, int format,
     fxcache_touch(w);
     int ch = voice_find(id);
     if (ch < 0) {
-        int ativas = 0;
-        for (int c = 0; c < NVOICE; ++c) if (mixer_ch_playing(c)) ++ativas;
-        if (ativas >= TETO_SFX_VOZES && loops != 0) { return; } /* teto: descarta efeito novo (em loop infinito, tipo motor/sirene, rouba) */
-    }
-    if (ch < 0) for (int c = 0; c < NVOICE; ++c) if (!mixer_ch_playing(c)) { ch = c; break; }
-    if (ch < 0) { /* todos ocupados: rouba o mais antigo */
-        ch = 0;
-        for (int c = 1; c < NVOICE; ++c) if (g_voice[c].order < g_voice[ch].order) ch = c;
+        /* VOZES: so os efeitos que acabam sozinhos contam para o teto (os loops, tipo sirene e motores, ficam de fora): antes, sirene + motores
+         * enchiam as vagas e o tiro novo era descartado ate a sirene parar. Um tiro novo toma o lugar do efeito curto mais antigo. */
+        int ativas1 = 0, mais_antigo = -1;
+        for (int c = 0; c < NVOICE; ++c) {
+            if (!mixer_ch_playing(c) || !g_voice[c].oneshot) continue;
+            ++ativas1;
+            if (mais_antigo < 0 || g_voice[c].order < g_voice[mais_antigo].order) mais_antigo = c;
+        }
+        for (int c = 0; c < NVOICE; ++c) if (!mixer_ch_playing(c)) { ch = c; break; }
+        if (loops != 0 && (ativas1 >= TETO_SFX_VOZES || ch < 0)) {
+            if (mais_antigo < 0) return; /* so loops tocando e nenhum canal livre: descarta */
+            ch = mais_antigo;
+        }
+        if (ch < 0) { /* loop novo e todos ocupados: toma o efeito curto mais antigo, ou o canal mais antigo */
+            ch = mais_antigo;
+            if (ch < 0) { ch = 0; for (int c = 1; c < NVOICE; ++c) if (g_voice[c].order < g_voice[ch].order) ch = c; }
+        }
     }
     for (int c = 0; c < NVOICE; ++c) if (c != ch && g_voice[c].id == id) g_voice[c].id = 0;
     g_voice[ch].id = id;
+    g_voice[ch].oneshot = loops != 0;
     g_voice[ch].order = ++g_order;
     g_voice[ch].upd_t = timer_ticks();
     mixer_ch_play(ch, &w->wf);

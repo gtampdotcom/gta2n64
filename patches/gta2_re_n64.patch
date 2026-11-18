@@ -97,7 +97,7 @@ index 3a136abe..9f292f5d 100644
  
  class BitSet32
 diff --git a/Source/Camera.cpp b/Source/Camera.cpp
-index 7d7a9569..9b0c24bc 100644
+index 7d7a9569..9b26a43c 100644
 --- a/Source/Camera.cpp
 +++ b/Source/Camera.cpp
 @@ -291,6 +291,45 @@ Fix16 Camera::ReturnOwnerVelocity_435A20()
@@ -218,23 +218,38 @@ index 7d7a9569..9b0c24bc 100644
              SmoothApproachClamped_4F75D0(&field_0_target_pos.field_8_z,
                                           &field_AC_cam_velocity.field_8_z,
                                           &field_98_cur_pos.field_8_z,
-@@ -585,6 +663,15 @@ void Camera::SetScreenSize_4361B0(u32 width, u32 height)
+@@ -585,6 +663,30 @@ void Camera::SetScreenSize_4361B0(u32 width, u32 height)
  }
  
  
 +#ifdef N64
 +// Camera mais baixa, como no PS1: o zoom padrao (0x38CC) sobe N64_CAM_ZOOM_PCT %. Quanto maior, mais perto do chao (enxerga menos mapa).
 +// 100 = camera do PC. Ajuste aqui: 120 = um pouco mais baixa, 130 = padrao, 150 = bem perto.
++// Altura da camera (Opcoes e menu de pausa): 11 niveis, 3 = o zoom de sempre. Mais alto = mais longe do chao (enxerga mais mapa, custa velocidade).
++#ifndef N64_CAM_HEIGHT_DEFAULT
++#define N64_CAM_HEIGHT_DEFAULT 3
++#endif
++int gN64CamHeight = N64_CAM_HEIGHT_DEFAULT;
++extern "C" int gta2_n64_get_cam_height(void)
++{
++    return gN64CamHeight;
++}
++extern "C" void gta2_n64_set_cam_height(int v)
++{
++    gN64CamHeight = v < 0 ? 0 : (v > 10 ? 10 : v);
++}
 +static inline Fix16 N64_CamZoom()
 +{
-+    return Fix16((s32)(0x38CC * (gN64Mode ? N64_CAM_ZOOM_PCT : N64_CAM_ZOOM_PSX_PCT) / 100), 0);
++    static const int kHeightPct[11] = {125, 115, 107, 100, 93, 86, 80, 74, 68, 62, 56}; // % do zoom de cada modo, por nivel de altura
++    const s32 pct = (gN64Mode ? N64_CAM_ZOOM_PCT : N64_CAM_ZOOM_PSX_PCT) * kHeightPct[gN64CamHeight] / 100;
++    return Fix16((s32)(0x38CC * pct / 100), 0);
 +}
 +#endif
 +
  MATCH_FUNC(0x4364A0)
  void Camera::UpdateFollowCarCamera_4364A0(Car* pCar)
  {
-@@ -601,6 +688,9 @@ void Camera::UpdateFollowCarCamera_4364A0(Car* pCar)
+@@ -601,6 +703,9 @@ void Camera::UpdateFollowCarCamera_4364A0(Car* pCar)
          Fix16 new_z;
          new_z = Max_41E130(pCar->GetZ_41E450() - kTwo_676820, kOne_67681C);
          Fix16 zoom = kDefaultZoom_6766D4;
@@ -244,7 +259,7 @@ index 7d7a9569..9b0c24bc 100644
  
          AccumulateSuspicionOnDriver_435F90(pCar);
          ApplyCarVelocityCameraOffset_436200(pCar, &new_x, &new_y, &new_z);
-@@ -647,6 +737,9 @@ void Camera::UpdateFollowPedCamera_436540(Ped* pPed)
+@@ -647,6 +752,9 @@ void Camera::UpdateFollowPedCamera_436540(Ped* pPed)
          if (pPed->GetPedState_403990() != ped_state_1::dead_9)
          {
              zoom = kDefaultZoom_6766D4;
@@ -824,10 +839,10 @@ index 8d11ea67..2359f866 100644
      x += other.x;
      y += other.y;
 diff --git a/Source/Frontend.cpp b/Source/Frontend.cpp
-index 22c45bf9..e4d1d820 100644
+index 22c45bf9..6420a939 100644
 --- a/Source/Frontend.cpp
 +++ b/Source/Frontend.cpp
-@@ -37,6 +37,100 @@
+@@ -37,6 +37,115 @@
  #pragma comment(lib, "dxguid.lib")
  
  void Start_GTA2Manager_5E4DE0();
@@ -837,12 +852,16 @@ index 22c45bf9..e4d1d820 100644
 +extern "C" void gta2_n64_set_volume(int which, int v);
 +extern "C" int gta2_n64_get_mode(void); // Camera.cpp: 0 = PSX (camera longe/travada, sem luzes), 1 = PC (camera livre, com luzes)
 +extern "C" void gta2_n64_set_mode(int v);
++extern "C" int gta2_n64_get_cam_height(void); // Camera.cpp: 0..6, 3 = normal
++extern "C" void gta2_n64_set_cam_height(int v);
++extern "C" int gta2_n64_get_res_option(int which); // main_n64.c: 0 = game (0 = 640x240, 1 = 320x240), 1 = menus (0 = like the game, 1 = 480i)
++extern "C" void gta2_n64_set_res_option(int which, int v);
 +extern char gN64Language; // TextTable.cpp
 +
-+// linhas da pagina de Opcoes: 0 musica, 1 efeitos, 2 idioma, 3 modo (PSX/PC); 4 = VOLTAR
++// linhas da pagina de Opcoes: 0 musica, 1 efeitos, 2 idioma, 3 modo (PSX/PC), 4 altura da camera, 5 resolucao do jogo, 6 resolucao dos menus; 7 = VOLTAR
 +enum
 +{
-+    N64_OPT_ROWS = 4
++    N64_OPT_ROWS = 7
 +};
 +
 +// idiomas da pagina de Opcoes: 0 = ingles (e), 1 = espanhol (s), 2 = portugues (p)
@@ -863,6 +882,9 @@ index 22c45bf9..e4d1d820 100644
 +    o[1].field_6E_horizontal_selected_idx = (u16)gta2_n64_get_volume(1);
 +    o[2].field_6E_horizontal_selected_idx = (u16)N64_LangIdx(gN64Language);
 +    o[3].field_6E_horizontal_selected_idx = (u16)gta2_n64_get_mode();
++    o[4].field_6E_horizontal_selected_idx = (u16)gta2_n64_get_cam_height();
++    o[5].field_6E_horizontal_selected_idx = (u16)gta2_n64_get_res_option(0);
++    o[6].field_6E_horizontal_selected_idx = (u16)gta2_n64_get_res_option(1);
 +}
 +
 +// Aplica o valor escolhido na linha `row` da pagina de Opcoes
@@ -923,12 +945,20 @@ index 22c45bf9..e4d1d820 100644
 +    {
 +        gta2_n64_set_mode(val);
 +    }
++    else if (row == 4)
++    {
++        gta2_n64_set_cam_height(val);
++    }
++    else if (row == 5 || row == 6)
++    {
++        gta2_n64_set_res_option(row - 5, val); // the display changes by itself: menus on the next frame, the game when a level starts
++    }
 +}
 +#endif
  
  DEFINE_GLOBAL(Frontend*, gFrontend_67DC84, 0x67DC84);
  DEFINE_GLOBAL_INIT(u32, counter_706C4C, 0, 0x706C4C);
-@@ -80,6 +174,9 @@ DEFINE_GLOBAL(bool, gCheatMiniCars_67D6C8, 0x67D6C8);
+@@ -80,6 +189,9 @@ DEFINE_GLOBAL(bool, gCheatMiniCars_67D6C8, 0x67D6C8);
  
  s32 sCheatHashSecret_61F0A8[8] = {829, 761, 23, 641, 43, 809, 677, 191};
  
@@ -938,7 +968,7 @@ index 22c45bf9..e4d1d820 100644
  MATCH_FUNC(0x4AE010)
  LPCSTR __stdcall FreeLoader::GetRegDword_4AE010(HKEY hKey, LPCSTR lpValueName, LPCSTR default_value)
  {
-@@ -742,6 +839,12 @@ void Frontend::ChangeMenuPage_4B3170(u16 menu_page_idx)
+@@ -742,6 +854,12 @@ void Frontend::ChangeMenuPage_4B3170(u16 menu_page_idx)
              Bink::OpenSlot2_5133E0(gFrontend_67DC84->intro_bik_4B5E50(), gSampManager_6FFF00.field_0_hDriver);
          }
      }
@@ -951,7 +981,7 @@ index 22c45bf9..e4d1d820 100644
      else if (menu_page_idx == MENUPAGE_START_MENU)
      {
          field_C9E4_last_input_time = timeGetTime();
-@@ -774,6 +877,14 @@ void Frontend::GetOptionText_4B3AF0(u16 menu_page_idx, u16 option_idx, wchar_t**
+@@ -774,6 +892,14 @@ void Frontend::GetOptionText_4B3AF0(u16 menu_page_idx, u16 option_idx, wchar_t**
      {
          u16 plyr_idx = pOption->field_6E_horizontal_selected_idx;
          wchar_t* p_wName = reinterpret_cast<wchar_t*>(&gPlyDat_6FEAC0->field_26A0_plyr_stats[plyr_idx].field_90_strPlayerName);
@@ -966,7 +996,7 @@ index 22c45bf9..e4d1d820 100644
          if (field_110_state == FrontendState::User_Typing_New_Player_Name_3)
          {
              // player typing a name
-@@ -791,6 +902,21 @@ void Frontend::GetOptionText_4B3AF0(u16 menu_page_idx, u16 option_idx, wchar_t**
+@@ -791,6 +917,33 @@ void Frontend::GetOptionText_4B3AF0(u16 menu_page_idx, u16 option_idx, wchar_t**
              swprintf(gTmpWideStr_67C7D8, L"%s", gPlyDat_6FEAC0->field_26A0_plyr_stats[plyr_idx].field_90_strPlayerName);
          }
      }
@@ -984,11 +1014,23 @@ index 22c45bf9..e4d1d820 100644
 +        swprintf(gTmpWideStr_67C7D8, L"%s",
 +                 pOption->field_6E_horizontal_selected_idx ? (es ? L"NOCHE" : (pt ? L"NOITE" : L"NIGHT")) : ((es || pt) ? L"DIA" : L"DAY"));
 +    }
++    else if (menu_page_idx == MENUPAGE_15 && option_idx == 4)
++    {
++        swprintf(gTmpWideStr_67C7D8, L"%s %d", pOption->field_6_option_name_str, (int)pOption->field_6E_horizontal_selected_idx + 1);
++    }
++    else if (menu_page_idx == MENUPAGE_15 && option_idx == 5)
++    {
++        swprintf(gTmpWideStr_67C7D8, L"%s %s", pOption->field_6_option_name_str, pOption->field_6E_horizontal_selected_idx ? L"320X240" : L"640X240");
++    }
++    else if (menu_page_idx == MENUPAGE_15 && option_idx == 6)
++    {
++        swprintf(gTmpWideStr_67C7D8, L"%s %s", pOption->field_6_option_name_str, pOption->field_6E_horizontal_selected_idx ? L"480I" : L"240P");
++    }
 +#endif
      else if (menu_page_idx == MENUPAGE_VIEW_HIGH_SCORE && option_idx == 0)
      {
          swprintf(gTmpWideStr_67C7D8, L"%s", gText_0x14_704DFC->Find_5B5F90("hi_for"));
-@@ -989,6 +1115,9 @@ EXTERN_GLOBAL(s32, gGTA2VersionMinor_708284);
+@@ -989,6 +1142,9 @@ EXTERN_GLOBAL(s32, gGTA2VersionMinor_708284);
  
  // sub_457920 in 9.6f
  // https://decomp.me/scratch/jchxT
@@ -998,7 +1040,7 @@ index 22c45bf9..e4d1d820 100644
  MATCH_FUNC(0x4AD140)
  void Frontend::DrawMenu_4AD140()
  {
-@@ -1002,7 +1131,17 @@ void Frontend::DrawMenu_4AD140()
+@@ -1002,7 +1158,17 @@ void Frontend::DrawMenu_4AD140()
      if (field_132_current_page_idx == MENUPAGE_START_MENU)
      {
          swprintf(tmpBuff_67BD9C, L"GTA2 V%d.%d", gGTA2VersionMajor_708280, gGTA2VersionMinor_708284);
@@ -1016,7 +1058,7 @@ index 22c45bf9..e4d1d820 100644
      }
  
      if (field_132_current_page_idx == MENUPAGE_PLAY)
-@@ -1155,6 +1294,14 @@ void Frontend::DrawMenu_4AD140()
+@@ -1155,6 +1321,14 @@ void Frontend::DrawMenu_4AD140()
  
              x_pos = pMenuOption->field_2_x_pos;
              y_pos = pMenuOption->field_4_y_pos;
@@ -1031,7 +1073,7 @@ index 22c45bf9..e4d1d820 100644
  
              if (option_idx == pMenuPage->field_BC6_current_option_idx)
              {
-@@ -1652,6 +1799,14 @@ void Frontend::read_menu_input_4AFEB0()
+@@ -1652,6 +1826,14 @@ void Frontend::read_menu_input_4AFEB0()
          field_C9CD_right_pressed = right && !field_C9D4_right_key_down;
          field_C9D4_right_key_down = right;
  
@@ -1046,7 +1088,7 @@ index 22c45bf9..e4d1d820 100644
          const u8 returnKey = field_8_keys[DIK_RETURN] & 0x80;
          field_C9D0_return_pressed = returnKey && !field_C9D7_return_key_down;
          field_C9D7_return_key_down = returnKey;
-@@ -1750,6 +1905,12 @@ void Frontend::UpdateMenuScreen_4B6780()
+@@ -1750,6 +1932,12 @@ void Frontend::UpdateMenuScreen_4B6780()
          {
              field_EE08_menu_screen = Credits_17;
          }
@@ -1059,7 +1101,7 @@ index 22c45bf9..e4d1d820 100644
          else
          {
              field_EE08_menu_screen = PlayArea1_7;
-@@ -1779,7 +1940,11 @@ void Frontend::ManageCredits_4B7A10()
+@@ -1779,7 +1967,11 @@ void Frontend::ManageCredits_4B7A10()
      {
          if (!field_C9B3_key_held)
          {
@@ -1071,7 +1113,7 @@ index 22c45bf9..e4d1d820 100644
              return;
          }
      }
-@@ -1798,7 +1963,11 @@ void Frontend::ManageCredits_4B7A10()
+@@ -1798,7 +1990,11 @@ void Frontend::ManageCredits_4B7A10()
              {
                  if (++field_1EB38_credits_line_idx == 600)
                  {
@@ -1083,7 +1125,7 @@ index 22c45bf9..e4d1d820 100644
                      return;
                  }
                  if ((field_1EB34_credits_ypos += Fix16(field_EE0E_credits.field_2_lines[field_1EB38_credits_line_idx].field_4_y_gap)) > 262124)
-@@ -1904,7 +2073,11 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -1904,7 +2100,11 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
                      Start_GTA2Manager_5E4DE0();
                      break;
                  case MENUPAGE_QUIT: // 258
@@ -1095,7 +1137,7 @@ index 22c45bf9..e4d1d820 100644
                      break;
                  case MENUPAGE_GET_READY_TO_PLAY: // 264
                      stage_main_idx = gGameSession_67E8E0.GetMainStageIdx_4C5980();
-@@ -1936,6 +2109,12 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -1936,6 +2136,12 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
              }
              snd1_67D818.field_0_object_type = 5;
          }
@@ -1108,7 +1150,7 @@ index 22c45bf9..e4d1d820 100644
          else if (field_132_current_page_idx == MENUPAGE_PLAY && pMenuPage->field_BC6_current_option_idx == 0) // player
          {
              field_110_state = FrontendState::User_Typing_New_Player_Name_3;
-@@ -1958,6 +2137,9 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -1958,6 +2164,9 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
              case MENUPAGE_PARENTAL_CONTROL:
                  ChangeMenuPage_4B3170(MENUPAGE_CREDITS);
                  break;
@@ -1118,7 +1160,7 @@ index 22c45bf9..e4d1d820 100644
              case MENUPAGE_PLAY:
              case MENUPAGE_DEAD:
              case MENUPAGE_AREA_COMPLETE:
-@@ -1971,7 +2153,11 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -1971,7 +2180,11 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
                  ChangeMenuPage_4B3170(MENUPAGE_PLAY);
                  break;
              default:
@@ -1130,7 +1172,7 @@ index 22c45bf9..e4d1d820 100644
                  break;
          }
          snd1_67D818.field_0_object_type = 6;
-@@ -1989,6 +2175,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -1989,6 +2202,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
          snd1_67D818.field_0_object_type = 2;
      }
  
@@ -1147,7 +1189,7 @@ index 22c45bf9..e4d1d820 100644
      // Set what happens if the player press the left arrow.
      if (field_C9CC_left_pressed)
      {
-@@ -2016,6 +2212,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -2016,6 +2239,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
                      snd1_67D818.field_0_object_type = 3;
                  }
              }
@@ -1164,7 +1206,7 @@ index 22c45bf9..e4d1d820 100644
              pMenuPage = pMenuPageSaved;
          }
          else if (field_132_current_page_idx == MENUPAGE_PLAY)
-@@ -2058,6 +2264,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
+@@ -2058,6 +2291,16 @@ void Frontend::UpdatePageFromUserInput_4AE2D0()
                      snd1_67D818.field_0_object_type = 4;
                  }
              }
@@ -1181,7 +1223,7 @@ index 22c45bf9..e4d1d820 100644
              pMenuPage = pMenuPageSaved;
          }
          else if (field_132_current_page_idx == MENUPAGE_PLAY)
-@@ -3104,6 +3320,11 @@ void Frontend::DrawBackground_4B6E10()
+@@ -3104,6 +3347,11 @@ void Frontend::DrawBackground_4B6E10()
      else
      {
          GetTgaIdxsForMenuScreen_4B6B00(field_EE08_menu_screen, &tga_idx, reinterpret_cast<u8*>(&ret));
@@ -1193,7 +1235,7 @@ index 22c45bf9..e4d1d820 100644
  
          // Left side
          s32 blitRet = pgbh_BlitImage(tgaArray_61F0C8[tga_idx].field_84_img, 0, 0, 278, 480, 0, 0);
-@@ -3229,10 +3450,26 @@ void Frontend::GetTgaIdxsForMenuScreen_4B6B00(u8 screen, u8* pTgaIdx, u8* pTgaId
+@@ -3229,10 +3477,26 @@ void Frontend::GetTgaIdxsForMenuScreen_4B6B00(u8 screen, u8* pTgaIdx, u8* pTgaId
      }
  }
  
@@ -1220,7 +1262,7 @@ index 22c45bf9..e4d1d820 100644
  
      FILE* hFile = crt::fopen(tgaArray_61F0C8[idx].field_0_tga_name, "rb");
      if (!hFile)
-@@ -3313,8 +3550,17 @@ Frontend::Frontend()
+@@ -3313,8 +3577,17 @@ Frontend::Frontend()
      field_C9D6_down_key_down = 0;
      field_C9D3_left_key_down = 0;
      field_C9D4_right_key_down = 0;
@@ -1238,7 +1280,7 @@ index 22c45bf9..e4d1d820 100644
      field_C9D9_delete_key_down = 0;
      field_10C_bKeyboardAcquireFailed = false;
      field_108_winmain_next_state = Run_Frontend_2;
-@@ -3534,11 +3780,23 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
+@@ -3534,11 +3807,23 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
      wcsncpy(pPage->field_4_options_array[1].field_6_option_name_str,
              gText_0x14_704DFC->Find_5B5F90("options"),
              0x32u);
@@ -1262,7 +1304,7 @@ index 22c45bf9..e4d1d820 100644
      pPage->field_4_options_array[2].field_80_menu_page_target = 9;
      pPage->field_B8A_option_states[0].field_0_unused = 280;
      pPage->field_B8A_option_states[0].field_2_unused = 258;
-@@ -4096,6 +4354,59 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
+@@ -4096,6 +4381,62 @@ void Frontend::SetupMenuStringsOptionsElements_4B0220()
      pPage->field_B8A_option_states[0].field_2_unused = 348; //  TODO: check for wrong var
      pPage->field_BC6_current_option_idx = 0;
      pPage->field_BC8_default_option_idx = 0;
@@ -1278,7 +1320,10 @@ index 22c45bf9..e4d1d820 100644
 +        const wchar_t* const kNames[N64_OPT_ROWS] = {(es || pt) ? L"MUSICA" : L"MUSIC",
 +                                                     es ? L"EFECTOS" : (pt ? L"EFEITOS" : L"EFFECTS"),
 +                                                     (es || pt) ? L"IDIOMA" : L"LANGUAGE",
-+                                                     (es || pt) ? L"MODO" : L"MODE"};
++                                                     (es || pt) ? L"MODO" : L"MODE",
++                                                     (es || pt) ? L"ALTURA CAM" : L"CAM HEIGHT",
++                                                     es ? L"JUEGO" : (pt ? L"JOGO" : L"GAME"),
++                                                     L"MENUS"};
 +        for (s32 o = 0; o < N64_OPT_ROWS; o++)
 +        {
 +            MenuItem& op = pg.field_4_options_array[o];
@@ -1286,9 +1331,9 @@ index 22c45bf9..e4d1d820 100644
 +            op.field_2_x_pos = 300;
 +            op.field_4_y_pos = 250 + o * 20;
 +            wcsncpy(op.field_6_option_name_str, kNames[o], 0x32u);
-+            op.field_6E_horizontal_selected_idx = (o == 2) ? (u16)N64_LangIdx(lg) : (o == 3 ? (u16)gta2_n64_get_mode() : 10);
++            op.field_6E_horizontal_selected_idx = (o == 2) ? (u16)N64_LangIdx(lg) : (o == 3 ? (u16)gta2_n64_get_mode() : (o == 4 ? (u16)gta2_n64_get_cam_height() : (o >= 5 ? (u16)gta2_n64_get_res_option(o - 5) : 10)));
 +            op.field_70_unused = 0;
-+            op.field_7E_horizontal_max_idx = (o == 3) ? 1 : ((o == 2) ? 2 : 10);
++            op.field_7E_horizontal_max_idx = (o == 3 || o >= 5) ? 1 : ((o == 2) ? 2 : (o == 4 ? 10 : 10));
 +            for (u16 k = 0; k <= op.field_7E_horizontal_max_idx; k++)
 +            {
 +                op.field_72_horizontal_idx_enabled[k] = 1;
@@ -1322,7 +1367,7 @@ index 22c45bf9..e4d1d820 100644
      field_EE0E_credits.LoadCredits_483F20();
  }
  
-@@ -5093,6 +5404,39 @@ void Frontend::LoadMapFilenamesFromSvg_4B4EC0()
+@@ -5093,6 +5434,39 @@ void Frontend::LoadMapFilenamesFromSvg_4B4EC0()
      }
  
      char_type path[256];
@@ -1440,7 +1485,7 @@ index e4478ce3..7c29ec3f 100644
  MATCH_FUNC(0x4B9DE0)
  Game::Game(u8 max_players, s8 player_idx)
 diff --git a/Source/Hud.cpp b/Source/Hud.cpp
-index 6049e6a5..bbab549d 100644
+index 6049e6a5..105accf2 100644
 --- a/Source/Hud.cpp
 +++ b/Source/Hud.cpp
 @@ -28,6 +28,14 @@
@@ -1647,7 +1692,7 @@ index 6049e6a5..bbab549d 100644
                              82,
                              gPlayerStatsFont_70646C,
                              palette_types_enum::font_remaps_8,
-@@ -3201,12 +3257,310 @@ void Hud_PauseScreen::UpdatePauseSection_5D6300()
+@@ -3201,12 +3257,340 @@ void Hud_PauseScreen::UpdatePauseSection_5D6300()
  }
  
  // https://decomp.me/scratch/Uq97l
@@ -1658,6 +1703,12 @@ index 6049e6a5..bbab549d 100644
 +extern "C" void gta2_n64_rect(float x0, float y0, float x1, float y1, u32 rgba);
 +extern "C" int gta2_n64_get_volume(int which);
 +extern "C" void gta2_n64_set_volume(int which, int v);
++extern "C" int gta2_n64_get_cam_height(void); // Camera.cpp: 0..6, 3 = normal
++extern "C" void gta2_n64_set_cam_height(int v);
++extern "C" int gta2_n64_get_res_option(int which); // main_n64.c: 0 = game (0 = 640x240, 1 = 320x240)
++extern "C" void gta2_n64_set_res_option(int which, int v);
++extern "C" int gta2_n64_get_fps_option(void); // render_n64.c
++extern "C" void gta2_n64_set_fps_option(int v);
 +extern "C" void gta2_n64_hud_begin(float ax, float ay, int which);
 +extern "C" void gta2_n64_hud_end(void);
 +
@@ -1666,6 +1717,9 @@ index 6049e6a5..bbab549d 100644
 +    N64P_EFFECTS,
 +    N64P_MUSIC,
 +    N64P_TEXT_SPEED,
++    N64P_CAMERA,
++    N64P_RESOLUTION,
++    N64P_FPS,
 +    N64P_CHEATS,
 +    N64P_RESUME,
 +    N64P_QUIT,
@@ -1866,6 +1920,20 @@ index 6049e6a5..bbab549d 100644
 +        s32 v = gHud_2B00_706620->field_13C4_text_speed - step;
 +        gHud_2B00_706620->field_13C4_text_speed = v < 2 ? 2 : v > 4 ? 4 : v;
 +    }
++    if (step && gN64PauseRow == N64P_CAMERA)
++    {
++        // camera height, 7 levels (Camera.cpp): right = higher (sees more of the map, costs speed), left = lower
++        gta2_n64_set_cam_height(gta2_n64_get_cam_height() + step);
++    }
++    if ((step || pad & 16) && gN64PauseRow == N64P_RESOLUTION)
++    {
++        // 640x240 <-> 320x240; main_n64.c re-initialises the display on the next frame (and keeps 320x240 if 640x240 does not fit)
++        gta2_n64_set_res_option(0, !gta2_n64_get_res_option(0));
++    }
++    if ((step || pad & 16) && gN64PauseRow == N64P_FPS)
++    {
++        gta2_n64_set_fps_option(!gta2_n64_get_fps_option());
++    }
 +    if (pad & 16 && gN64PauseRow == N64P_CHEATS)
 +    {
 +        gN64CheatPage = true;
@@ -1934,7 +2002,7 @@ index 6049e6a5..bbab549d 100644
 +        N64PauseText("BACK", kCheatY[N64C_BACK]);
 +        return; // no progress line on the cheats page
 +    }
-+    static const s32 kRowY[N64P_ROWS] = {116, 186, 256, 296, 346, 386};
++    static const s32 kRowY[N64P_ROWS] = {104, 168, 232, 262, 292, 322, 352, 382, 412};
 +    gta2_n64_rect(150.0f, (f32)kRowY[gN64PauseRow] - 4.0f, 490.0f, (f32)kRowY[gN64PauseRow] + (gN64PauseRow <= N64P_MUSIC ? 58.0f : 26.0f),
 +                  N64Rgba(255, 255, 255, 40));
 +    N64PauseText("EFFECTS VOLUME", kRowY[N64P_EFFECTS]);
@@ -1943,6 +2011,13 @@ index 6049e6a5..bbab549d 100644
 +    N64PauseBar(kRowY[N64P_MUSIC] + 28, gta2_n64_get_volume(0));
 +    const s32 ts = gHud_2B00_706620->field_13C4_text_speed;
 +    N64PauseText(ts <= 2 ? "TEXT SPEED: FAST" : ts >= 4 ? "TEXT SPEED: SLOW" : "TEXT SPEED: NORMAL", kRowY[N64P_TEXT_SPEED]);
++    {
++        char cam[32];
++        snprintf(cam, sizeof(cam), "CAMERA HEIGHT: %d", gta2_n64_get_cam_height() + 1);
++        N64PauseText(cam, kRowY[N64P_CAMERA]);
++    }
++    N64PauseText(gta2_n64_get_res_option(0) ? "RESOLUTION: 320X240" : "RESOLUTION: 640X240", kRowY[N64P_RESOLUTION]);
++    N64PauseText(gta2_n64_get_fps_option() ? "FPS COUNTER: ON" : "FPS COUNTER: OFF", kRowY[N64P_FPS]);
 +    N64PauseText("CHEATS", kRowY[N64P_CHEATS]);
 +    N64PauseText("RESUME PLAY", kRowY[N64P_RESUME]);
 +    N64PauseText("QUIT PLAY", kRowY[N64P_QUIT]);
@@ -1958,7 +2033,7 @@ index 6049e6a5..bbab549d 100644
      if (gGame_0x40_67E008->IsPaused_416BC0() && !gGame_0x40_67E008->field_38_local_player->field_78A_show_quit_message)
      {
          DrawFigureScaled_5D7670(sprite_types_enum::user_6, 134, 227, 180, kAngZero_706610, palette_types_enum::sprites_2, 0, 0, 0);
-@@ -3220,6 +3574,7 @@ void Hud_PauseScreen::DrawPause_5D63B0()
+@@ -3220,6 +3604,7 @@ void Hud_PauseScreen::DrawPause_5D63B0()
          u32 y_offset = (gText_0x14_704DFC->field_10_lang_code != 'j') ? 158 : 164;
  
          DrawText_5D7720(pPauseText, (640 - max_width) / 2, y_offset, gPauseFont_7063F8, palette_types_enum::sprites_2, 0, 0, 0);
@@ -1966,7 +2041,7 @@ index 6049e6a5..bbab549d 100644
  
          if (!gGameSession_67E8E0.IsBonusStage_4C59A0())
          {
-@@ -3342,6 +3697,9 @@ void Hud_PauseScreen::DrawPause_5D63B0()
+@@ -3342,6 +3727,9 @@ void Hud_PauseScreen::DrawPause_5D63B0()
                  u16 sprite_idx = gGtx_0x106C_703DD4->GetSpriteTrueIndex_5AA460(sprite_type, sprite_pal);
                  s32 icon_width = gGtx_0x106C_703DD4->get_sprite_width_420220(sprite_idx) + 10;
                  text_xpos = (640 - icon_width - max_width_2) / 2;
@@ -1976,7 +2051,7 @@ index 6049e6a5..bbab549d 100644
                  DrawFigureScaled_5D7670(sprite_type,
                                          sprite_pal,
                                          text_xpos + icon_width / 2,
-@@ -3351,6 +3709,7 @@ void Hud_PauseScreen::DrawPause_5D63B0()
+@@ -3351,6 +3739,7 @@ void Hud_PauseScreen::DrawPause_5D63B0()
                                          0,
                                          0,
                                          0);
@@ -1984,7 +2059,7 @@ index 6049e6a5..bbab549d 100644
                  text_xpos += icon_width;
              }
              else
-@@ -3358,35 +3717,50 @@ void Hud_PauseScreen::DrawPause_5D63B0()
+@@ -3358,35 +3747,50 @@ void Hud_PauseScreen::DrawPause_5D63B0()
                  text_xpos = (640 - max_width_2) / 2;
              }
              // (u32): Fix16(u32) constructor (0x4926F0), the 220 goes through Fix16(s32) (0x4369F0)
@@ -2050,7 +2125,7 @@ index 6049e6a5..bbab549d 100644
      }
  }
  
-@@ -3399,6 +3773,10 @@ void Hud::UpdatePauseSection_5D69C0()
+@@ -3399,6 +3803,10 @@ void Hud::UpdatePauseSection_5D69C0()
  MATCH_FUNC(0x5d69d0)
  void Hud::UpdateHUD_5D69D0()
  {
