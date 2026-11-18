@@ -406,8 +406,10 @@ static int mode_fits(int w, int h)
 static int s_alloc = 0; /* what display_init() allocated: 0 = 640x240 buffers, 1 = 320x240 buffers (fallback only), 2 = 640x480 */
 static int s_border_fix;
 static void apply_borders(void) { vi_set_borders((vi_borders_t){ N64_OVERSCAN_X, N64_OVERSCAN_X, N64_OVERSCAN_Y, N64_OVERSCAN_Y }); }
+extern void gta2_n64_settings_tick(void); /* Frontend.cpp: writes the Options to SRAM once they stop changing */
 void gta2_n64_display_mode(int menu)
 {
+    gta2_n64_settings_tick();
     /* display_change() reapplies libdragon's own borders a frame or two later: put ours back */
     if (s_border_fix > 0) { apply_borders(); --s_border_fix; }
     int want = (menu && g_opt_menu_res) ? 2 : (g_opt_game_res ? 1 : 0);
