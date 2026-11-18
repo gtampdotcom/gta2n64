@@ -18,9 +18,10 @@ INCLUDE_FRONTEND ?= 1
 FRONTEND_DIR = $(if $(filter 1,$(INCLUDE_FRONTEND)),frontend,)
 # The game's intro movie (movie/intro.bik), converted to MPEG-1 320x240 by libdragon's videoconv64: about 10 MB. Needs ffmpeg
 # on the build machine (on WSL the Windows ffmpeg.exe is enough); without it, or with INCLUDE_INTRO=0, the ROM has no intro.
-# INTRO_QUALITY = videoconv64's 0..100 quality scale.
+# INTRO_QUALITY = videoconv64's 0..100 quality scale. 55 gives a 7.1 MB movie and keeps the whole ROM under 64 MiB, the largest
+# size a standard cartridge holds (75 gave 9.4 MB and a 65.7 MiB ROM).
 INCLUDE_INTRO ?= 1
-INTRO_QUALITY ?= 75
+INTRO_QUALITY ?= 55
 INTRO_ENTRY = $(if $(filter 1,$(INCLUDE_INTRO)),movie/intro.bik,)
 export INTRO_QUALITY
 # Mapas (cidades): bil = City 3 (Industrial), ste = City 2 (Residential), wil = City 1 (Downtown). Cada um: .gmp + .sty + .scr + pasta de missoes.

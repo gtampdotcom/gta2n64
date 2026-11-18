@@ -125,7 +125,7 @@ Pass them to `build.sh` or `make -f Makefile.recomp`:
 |---|---|
 | `GAME_DATA=/path/to/data` | Where the GTA 2 `data` folder is (default `../gta2_data/data`) |
 | `MAPS="bil ste wil"` | Cities to include (fewer = smaller ROM) |
-| `INCLUDE_INTRO=0` | Leave out the intro movie (about 11 MB). `INTRO_QUALITY=75` sets its quality (0..100; higher = bigger) |
+| `INCLUDE_INTRO=0` | Leave out the intro movie (about 11 MB). `INTRO_QUALITY=55` (default) sets its quality (0..100; higher = bigger) |
 | `INCLUDE_FRONTEND=0` | Leave out the menu screens (smaller ROM; hold Z at boot to jump straight into the map) |
 | `RADIO_RATE=12000` | Radio sample rate in Hz (`8000` = smaller) |
 | `N64_INST=/path` | libdragon install location |
@@ -254,7 +254,7 @@ Se `p.gxt` não existir nos dados originais, o processo de compilação o gera a
 |---|---|
 | `GAME_DATA=/caminho/data` | Pasta dos dados originais |
 | `MAPS="bil ste wil"` | Cidades incluídas |
-| `INCLUDE_INTRO=0` | Deixa o filme de abertura de fora (cerca de 11 MB). `INTRO_QUALITY=75` define a qualidade (0..100; maior = arquivo maior) |
+| `INCLUDE_INTRO=0` | Deixa o filme de abertura de fora (cerca de 11 MB). `INTRO_QUALITY=55` (padrao) define a qualidade (0..100; maior = arquivo maior) |
 | `INCLUDE_FRONTEND=0` | Remove telas do menu para reduzir a ROM |
 | `RADIO_RATE=12000` | Taxa de amostragem das rádios (Hz) |
 | `N64_INST=/caminho` | Instalação da libdragon |
